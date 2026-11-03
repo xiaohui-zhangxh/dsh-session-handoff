@@ -162,6 +162,28 @@ function sessionStartedAt(session, state) {
   return Number.isFinite(live) && live > 0 ? live : 0
 }
 
+// Accumulated run time (milliseconds) of the turns that already ended. Only
+// turn spans count: idle wall-clock time between turns is deliberately excluded.
+function runMsOf(state) {
+  const closed = state === undefined ? Number.NaN : Number(state.runMs)
+  return Number.isFinite(closed) && closed > 0 ? closed : 0
+}
+
+// Start time of the currently open turn (0 while idle). The client adds
+// `now - runStartedAt` on top of `runMs` so the active turn ticks live.
+function runStartedAtOf(state) {
+  const open = state === undefined || state.openTurn === null || typeof state.openTurn !== 'object'
+    ? Number.NaN
+    : Number(state.openTurn.startedAt)
+  return Number.isFinite(open) && open > 0 ? open : 0
+}
+
+// Epoch milliseconds of the most recent `turn/end` (0 before the first one).
+function lastTurnEndedAtOf(state) {
+  const value = state === undefined ? Number.NaN : Number(state.lastTurnEndedAt)
+  return Number.isFinite(value) && value > 0 ? value : 0
+}
+
 function sendJson(response, status, body) {
   response.statusCode = status
   response.setHeader('content-type', 'application/json; charset=utf-8')
@@ -584,8 +606,12 @@ export function apply(ctx, config) {
     return {
       turns: state.turns,
       // Epoch milliseconds of the session's creation, so the status bar can show
-      // the start clock and a live elapsed duration without another request.
+      // the start clock without another request.
       startedAt: sessionStartedAt(session, state),
+      // Run time of every ended turn, plus the open turn's start for a live tick.
+      runMs: runMsOf(state),
+      runStartedAt: runStartedAtOf(state),
+      lastTurnEndedAt: lastTurnEndedAtOf(state),
       phase: meta?.phase ?? state.phase,
       handoffFile: meta?.handoffFile ?? state.handoffFile,
       newSessionId: meta?.newSessionId ?? state.newSessionId,
@@ -604,6 +630,11 @@ export function apply(ctx, config) {
       sessionId: String(header.id),
       turns: 0,
       startedAt: Number.isFinite(header.createdAt) && header.createdAt > 0 ? header.createdAt : 0,
+      // Closed-turn run time in ms; `openTurn` is the span still running.
+      runMs: 0,
+      openTurn: null,
+      // Epoch ms of the newest completed turn, shown as the last end time.
+      lastTurnEndedAt: 0,
       phase: 'idle',
       handoffFile: '',
       newSessionId: '',
@@ -612,12 +643,31 @@ export function apply(ctx, config) {
     apply: (state, event) => {
       if (event.type === 'turn/start') {
         if (event.data.turn === state.turns) return state
-        return { ...state, turns: event.data.turn }
+        // A turn whose `turn/end` never arrived (crash, abort) has no trustworthy
+        // end, so the open span is dropped instead of billed to the next task.
+        return {
+          ...state,
+          turns: event.data.turn,
+          openTurn: {
+            turn: event.data.turn,
+            startedAt: Number.isFinite(event.time) ? event.time : 0,
+          },
+        }
       }
       if (event.type === 'turn/end') {
         const meta = phases.get(state.sessionId)
+        const open = state.openTurn
+        const completed = open !== null && open.turn === event.data.turn
+        const elapsed = completed && Number.isFinite(event.time) && Number.isFinite(open.startedAt)
+          ? Math.max(0, event.time - open.startedAt)
+          : 0
         return {
           ...state,
+          runMs: completed ? state.runMs + elapsed : state.runMs,
+          openTurn: completed ? null : open,
+          // Every `turn/end` stamps the last end, even one whose open span was
+          // already dropped: the conversation did finish a turn then.
+          lastTurnEndedAt: Number.isFinite(event.time) ? event.time : state.lastTurnEndedAt,
           phase: meta?.phase ?? 'idle',
           handoffFile: meta?.handoffFile ?? '',
           newSessionId: meta?.newSessionId ?? '',
@@ -666,21 +716,29 @@ export function apply(ctx, config) {
           }
           const state = registry?.stateOf(session, KEY)
           const meta = metaForSession(session, state)
+          const guard = state === undefined && meta === undefined
+            ? undefined
+            : {
+                sessionId: probe,
+                turns: state?.turns ?? 0,
+                // Both views agree with the top-level fields: a legacy state row
+                // may carry 0 while the live header still knows the start.
+                startedAt: sessionStartedAt(session, state),
+                runMs: runMsOf(state),
+                runStartedAt: runStartedAtOf(state),
+                lastTurnEndedAt: lastTurnEndedAtOf(state),
+                phase: meta?.phase ?? state?.phase ?? 'idle',
+                handoffFile: meta?.handoffFile ?? state?.handoffFile ?? '',
+                newSessionId: meta?.newSessionId ?? state?.newSessionId ?? '',
+                note: meta?.note ?? state?.note ?? '',
+              }
           sendJson(response, 200, {
             session: probe,
             startedAt: sessionStartedAt(session, state),
-            guard: state === undefined && meta === undefined
-              ? undefined
-              : {
-                  ...(state ?? { sessionId: probe }),
-                  // The nested view must agree with the top-level field: a legacy
-                  // state row may carry 0 while the live header still knows it.
-                  startedAt: sessionStartedAt(session, state),
-                  phase: meta?.phase ?? state?.phase ?? 'idle',
-                  handoffFile: meta?.handoffFile ?? state?.handoffFile ?? '',
-                  newSessionId: meta?.newSessionId ?? state?.newSessionId ?? '',
-                  note: meta?.note ?? state?.note ?? '',
-                },
+            runMs: runMsOf(state),
+            runStartedAt: runStartedAtOf(state),
+            lastTurnEndedAt: lastTurnEndedAtOf(state),
+            guard,
             turns: turnsOf(session),
           })
           return

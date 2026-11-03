@@ -135,8 +135,10 @@ class TestHost {
     for (const callback of this.listeners['session/event'] ?? []) callback(session, event)
   }
 
-  event(session, type, data) {
-    const event = { type, seq: session.events.length, data }
+  // `time` mirrors the durable event envelope timestamp the host stamps; the
+  // run-time projection folds those spans.
+  event(session, type, data, time = Date.now()) {
+    const event = { type, seq: session.events.length, time, data }
     session.events.push(event)
     this.emit(session, event)
     return event
@@ -367,11 +369,56 @@ describe('session handoff', () => {
     expect(probe.body.turns).toBe(2)
     expect(probe.body.guard.turns).toBe(2)
     expect(probe.body.guard.phase).toBe('idle')
+    expect(probe.body.runMs).toBe(host.viewOf(session).runMs)
+    expect(probe.body.guard.runMs).toBe(host.viewOf(session).runMs)
+    expect(probe.body.runStartedAt).toBe(0)
+    expect(probe.body.guard.runStartedAt).toBe(0)
+    expect(probe.body.lastTurnEndedAt).toBe(host.viewOf(session).lastTurnEndedAt)
+    expect(probe.body.guard.lastTurnEndedAt).toBe(host.viewOf(session).lastTurnEndedAt)
+    expect(probe.body.lastTurnEndedAt).toBeGreaterThan(0)
 
     // With the session no longer live, only the persisted projection state can
     // answer: this fails if init never stores the creation time.
     host.sessionsById.delete(session.id)
     expect(host.viewOf(session).startedAt).toBe(createdAt)
+  })
+
+  test('sums turn run time and ignores idle gaps', () => {
+    const { host } = setup({ enabled: true, autoHandoff: true, maxRounds: 50 })
+    const session = host.makeSession('session-aaaabbbb-cccc-dddd-eeee-aaaabbbbdddd', { createdAt: 1_700_000_000_000 })
+    const base = 1_700_000_000_000
+
+    // The open turn is exposed by its start; only a closed turn contributes.
+    host.event(session, 'turn/start', { turn: 1 }, base)
+    expect(host.viewOf(session).runMs).toBe(0)
+    expect(host.viewOf(session).runStartedAt).toBe(base)
+    expect(host.viewOf(session).lastTurnEndedAt).toBe(0)
+    host.event(session, 'turn/end', { turn: 1 }, base + 1_500)
+    expect(host.viewOf(session).runMs).toBe(1_500)
+    expect(host.viewOf(session).runStartedAt).toBe(0)
+    expect(host.viewOf(session).lastTurnEndedAt).toBe(base + 1_500)
+
+    // A one-hour idle gap between turns is not billed.
+    host.event(session, 'turn/start', { turn: 2 }, base + 3_600_000)
+    expect(host.viewOf(session).runMs).toBe(1_500)
+    expect(host.viewOf(session).lastTurnEndedAt).toBe(base + 1_500)
+    host.event(session, 'turn/end', { turn: 2 }, base + 3_600_000 + 2_500)
+    expect(host.viewOf(session).runMs).toBe(4_000)
+    expect(host.viewOf(session).lastTurnEndedAt).toBe(base + 3_600_000 + 2_500)
+
+    // A duplicated `turn/end` never counts the same span twice.
+    host.event(session, 'turn/end', { turn: 2 }, base + 3_600_000 + 2_500)
+    expect(host.viewOf(session).runMs).toBe(4_000)
+    expect(host.viewOf(session).lastTurnEndedAt).toBe(base + 3_600_000 + 2_500)
+
+    // A turn that never ended (crash/abort) is dropped instead of being
+    // stretched until the next task starts.
+    host.event(session, 'turn/start', { turn: 3 }, base + 7_200_000)
+    host.event(session, 'turn/start', { turn: 4 }, base + 7_200_000 + 800)
+    expect(host.viewOf(session).runMs).toBe(4_000)
+    expect(host.viewOf(session).runStartedAt).toBe(base + 7_200_000 + 800)
+    expect(host.viewOf(session).lastTurnEndedAt).toBe(base + 3_600_000 + 2_500)
+    expect(host.viewOf(session).turns).toBe(4)
   })
 
   test('reports no start time for a legacy session header', async () => {

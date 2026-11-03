@@ -64,4 +64,13 @@ describe('status clock formatting', () => {
   test('clamps a backwards clock to zero', () => {
     expect(clock.elapsedText(-5_000)).toBe('0秒')
   })
+
+  test('adds only the open turn to the closed run time', () => {
+    expect(clock.runTotalMs(0, 0, 1_000)).toBe(0)
+    expect(clock.runTotalMs(4_000, 0, 99_999)).toBe(4_000)
+    expect(clock.runTotalMs(4_000, 10_000, 12_500)).toBe(6_500)
+    // A clock that jumps backwards must not subtract run time.
+    expect(clock.runTotalMs(4_000, 10_000, 9_000)).toBe(4_000)
+    expect(clock.runTotalMs(Number.NaN, Number.NaN, 1_000)).toBe(0)
+  })
 })

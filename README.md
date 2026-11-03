@@ -1,26 +1,29 @@
 # 会话交接（Session Handoff）· DSH 插件
 
-> 常驻显示会话启动时间、已用时长与当前对话轮次；达到可配置上限时，先让模型写出交接文件，再自动把任务转移到一个新会话继续。
-> A DeepSeek Harness plugin that shows the session start time, live elapsed duration, and turn count, and hands the current task off to a fresh session at a configurable limit.
+> 常驻显示会话启动时间、工作时间与当前对话轮次；达到可配置上限时，先让模型写出交接文件，再自动把任务转移到一个新会话继续。
+> A DeepSeek Harness plugin that shows the session start time, accumulated turn work time, and turn count, and hands the current task off to a fresh session at a configurable limit.
 
 [English](#english) · [安装](#安装与更新) · [License](#license)
 
-在 DeepSeek Harness Web 界面的输入框下方常驻一条状态栏，显示当前会话的启动时间、已用时长与执行轮次（对话轮次），并在轮次达到上限时，让模型先写一份交接文件，再把任务转移到新会话继续。
+在 DeepSeek Harness Web 界面的输入框下方常驻一条状态栏，显示当前会话的启动时间、工作时间与执行轮次（对话轮次），并在轮次达到上限时，让模型先写一份交接文件，再把任务转移到新会话继续。
 
 ## 显示内容
 
 状态栏从左到右依次是：
 
 - **启动**：`启动 14:32`，取会话创建时间（会话头的 `createdAt`）；不是今天创建的会话会带上日期，如 `11-02 14:32`。鼠标悬停（或读屏聚焦触发区）可拿到完整的启动时间。
-- **持续**：`持续 12分03秒`，不足一小时时每秒刷新；满一小时后按分钟显示，如 `1小时05分`、`2小时00分`。它是会话创建至今的墙钟时长（空闲时间也计入，不是纯执行时间），与启动时间同一来源，因此刷新页面、切换会话、宿主重载后都不会归零。
+- **工作时间**：`工作时间 12分03秒`，是各轮任务运行时间之和——每轮从 `turn/start` 到 `turn/end` 的时长相加，轮与轮之间的空闲不计；正在跑的这一轮会实时累加（每秒刷新），满一小时后按分钟显示，如 `1小时05分`。它不是「当前时间 − 启动时间」的墙钟年龄。
 - **轮次**：`轮次 n/上限`（按 `turn/start` 折叠的会话轮次，一次用户输入 = 一轮），以及交接阶段：`正在写交接文件…`、`正在创建接续会话…`、`已交接 → <新会话>`（触发区显示 `· 已交接`）、`已达上限（未开启自动交接）`、`交接失败：<原因>`。
+
+「启动 · 工作时间」本身也是一个按钮，点击弹出「工时记录」面板，见下一节。
 
 ## 操作
 
-输入框下方的状态栏里，「启动 · 持续」只做展示；紧跟其后的「轮次 n/上限」是一个紧凑胶囊触发区（与输入栏右侧的上下文环一致）：
+输入框下方的状态栏里，左边是「启动 · 工作时间」信息胶囊，右边是「轮次 n/上限」设置胶囊（与输入栏右侧的上下文环一致）：
 
-- **划过**：底色高亮（`--dsw-alias-interactive-bg-hover`）。
-- **点击**：在触发区上方弹出悬浮设置窗（菜单面板：圆角 12、反转描边、lv3 阴影），内含轮次进度、最大轮次、自动交接、启用监控、立即交接与保存；点击窗外或按 Esc 关闭。
+- **点击「启动 · 工作时间」**：在触发区上方弹出「工时记录」面板，外观与输入区的 token/统计面板一致（图标 + 标题、标题下一根 0.5px 分割线、右对齐的数值行，`dl` 语义），显示 **启动时间**、**最后对话结束时间**（最近一次 `turn/end` 的完整时间）与 **总工作时间**（与胶囊同一数字，进行中的轮次实时累加）。
+- **点击「轮次 n/上限」**：弹出设置窗，内含轮次进度、最大轮次、自动交接、启用监控、立即交接与保存；两个面板互斥，点击窗外或按 Esc 关闭。
+- **划过**：两个胶囊都有底色高亮（`--dsw-alias-interactive-bg-hover`）。
 - 已交接的会话里，设置窗提供「打开接续会话」按钮，可手动切到接续会话；`立即交接` 在该会话隐藏，不会再重复发起交接。
 
 ## 交接流程
@@ -54,7 +57,7 @@
 `http://127.0.0.1:<web 端口>/session-handoff/api`
 
 - `GET /session-handoff/api` → `{ settings, file, stateFile, source }`
-- `GET /session-handoff/api?session=<sessionId>` → 该会话的 `{ session, startedAt, guard, turns }`：`startedAt` 是会话创建时间（Unix 毫秒），`guard` 含轮次与交接阶段（只对进程内活跃会话有效）
+- `GET /session-handoff/api?session=<sessionId>` → 该会话的 `{ session, startedAt, runMs, runStartedAt, lastTurnEndedAt, guard, turns }`：`startedAt` 是会话创建时间（Unix 毫秒），`runMs` 是已结束轮次的工作时间之和（毫秒），`runStartedAt` 是当前轮的开始时间（没有在跑的轮次时 0），`lastTurnEndedAt` 是最近一次 `turn/end` 的时间，`guard` 含轮次、工作时间与交接阶段（只对进程内活跃会话有效）
 - `POST` `{ "action": "settings", "maxRounds": 50, "enabled": true, "autoHandoff": true }`
 - `POST` `{ "action": "handoff", "sessionId": "<sessionId>" }`（该会话已在交接流程中时返回 409）
 
@@ -66,7 +69,7 @@
 bun test
 ```
 
-单测用模拟的宿主上下文覆盖：只交接一次、重复 `turn/end` 不重复开会话、插件重载后不重复交接、重载后从交接文件/续接提示恢复状态、续接沿用选中 preset、交接中拒绝重复请求、启动时间投影与探针字段。状态栏的启动时间/时长格式化由 `test/client-clock.test.mjs` 直接加载浏览器半边做纯函数校验。
+单测用模拟的宿主上下文覆盖：只交接一次、重复 `turn/end` 不重复开会话、插件重载后不重复交接、重载后从交接文件/续接提示恢复状态、续接沿用选中 preset、交接中拒绝重复请求、启动时间/最后结束时间投影与探针字段、轮次工作时间累加（轮间空闲不计、重复 `turn/end` 不重复计、未结束的轮次丢弃）。状态栏的启动时间/工作时间格式化与实时累加由 `test/client-clock.test.mjs` 直接加载浏览器半边做纯函数校验。
 
 ## 安装与更新
 
@@ -78,13 +81,13 @@ dsh plugin --profile desktop add "$(pwd)/dsh-session-handoff"
 ```
 
 - 安装后 profile 的 `package.json` 依赖为 `link:<仓库路径>`，`dsh.profile.bundles` 里保留 `@local/dsh-session-handoff`。
-- 宿主半边（`index.js`）改动后，运行中的 DSH 不会自动换模块：重启 DSH（或在插件管理里重装）后生效；浏览器半边 `client.js` 由客户端模块轮询自动换新。启动时间与已用时长由宿主半边的投影提供，因此升级到带该显示的一版后，同样要等 DSH 重启才会出现在状态栏（旧宿主只会显示轮次）。
+- 宿主半边（`index.js`）改动后，运行中的 DSH 不会自动换模块：重启 DSH（或在插件管理里重装）后生效；浏览器半边 `client.js` 由客户端模块轮询自动换新。启动时间与运行时间由宿主半边的投影提供，因此升级到带该显示的一版后，同样要等 DSH 重启才会出现在状态栏（旧宿主只会显示轮次）。
 - `GET /session-handoff/api` 返回的 `source` 是当前进程实际加载的模块文件 URL，可用来确认正在跑哪一份代码。
 - 设置与交接状态在 `~/.dsh/` 下（见上一节），不随仓库迁移。
 
 ## English
 
-A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plugin. It keeps a compact status line below the composer with the session start time, a live elapsed duration, and the turn counter; when a configurable turn limit is reached it asks the model to write a handoff file, then creates a fresh session with the same workspace and agent preset and sends it a resume prompt. The handoff is durable and idempotent: one session can never spawn more than one continuation, and reopening a handed-off session does not redirect away from it again.
+A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plugin. It keeps a compact status line below the composer with the session start time, the accumulated work time of the session's turns, and the turn counter; the time pill opens a “work time” panel (same skin as the composer token/stat panels: icon + title, rule, right-aligned rows) with the start time, last turn end time, and total work time. When a configurable turn limit is reached it asks the model to write a handoff file, then creates a fresh session with the same workspace and agent preset and sends it a resume prompt. The handoff is durable and idempotent: one session can never spawn more than one continuation, and reopening a handed-off session does not redirect away from it again.
 
 - Requires DSH 0.2.x on the Web/desktop profile (verified on 0.2.1-rc.5).
 - Install: `dsh plugin --profile desktop add <repo dir>`.
@@ -93,7 +96,9 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plug
 ## 已知边界
 
 - 只处理根会话；子代理（`origin: subagent`）不参与交接。
-- 启动时间取会话创建时间；宿主半边未更新（投影里没有 `startedAt`）时，状态栏只显示轮次，不显示启动时间与已用时长。
+- 启动时间取会话创建时间；宿主半边未更新（投影里没有 `startedAt`/`runMs`）时，状态栏只显示轮次，不显示启动时间与工作时间。
+- 工作时间只累计已结束轮次的 `turn/start → turn/end`；宿主崩溃导致某轮没有 `turn/end` 时，该轮不计入（不会把之后到下一轮之间的空闲算进去）。
+- 「最后对话结束时间」只在 `turn/end` 到达时更新；进行中的一轮显示的是上一次结束时间。
 - 交接状态文件在 DSH home 下，换 profile 或清空 `~/.dsh` 后会丢失；此时退回交接文件判定（仍不会重复开会话，只是 `已交接 →` 的新会话可能显示为空）。
 - 停止插件或删除本包即移除状态栏与后台判定；已生成的交接文件保留。
 

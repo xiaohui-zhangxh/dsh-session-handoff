@@ -12,9 +12,10 @@ window.__ModuleLoader__.load({
 
     const CSS = `
       .shd-root { position: relative; display: inline-flex; align-items: center; gap: 8px; }
+      .shd-anchor { position: relative; display: inline-flex; align-items: center; }
       .shd-clock { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 1;
         color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));
-        font-variant-numeric: tabular-nums; white-space: nowrap; cursor: default; }
+        font-variant-numeric: tabular-nums; white-space: nowrap; }
       .shd-clock-key { color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); }
       .shd-clock-value { color: var(--dsw-alias-label-secondary); }
       .shd-clock-sep { color: var(--dsw-alias-label-dimmed, var(--dsw-alias-label-tertiary)); }
@@ -66,6 +67,25 @@ window.__ModuleLoader__.load({
 
       .shd-field { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 3px 0; }
       .shd-field-label { color: var(--dsw-alias-label-secondary); }
+
+      /* Clock panel skin shared with the composer's token/stat dialogs: menu
+         surface, icon + title heading, a rule under it, then dt/dd rows. */
+      .shd-stat-panel { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 100; box-sizing: border-box;
+        width: max-content; min-width: min(300px, calc(100vw - 24px)); max-width: min(440px, calc(100vw - 24px));
+        padding: 16px; border: 0; border-radius: var(--dsw-radius-lg, 12px);
+        background: var(--dsw-specific-menu, var(--dsw-alias-bg-overlay, var(--dsw-alias-bg-layer-1)));
+        backdrop-filter: var(--dsw-menu-backdrop-filter, none);
+        box-shadow: var(--dsw-elevation-prominent, 0 8px 24px rgba(0, 0, 0, .28));
+        font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); cursor: default; }
+      .shd-stat-title { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 8px;
+        color: var(--dsw-alias-label-primary); font-weight: 500; }
+      .shd-stat-title-label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+      .shd-stat-title-label svg { width: 14px; height: 14px; flex: none; }
+      .shd-stat-rule { margin-bottom: 10px; border-top: 0.5px solid var(--dsw-alias-border-l2); }
+      .shd-stat-details { display: grid; grid-template-columns: minmax(76px, auto) minmax(0, 1fr);
+        gap: 6px 16px; margin: 0; color: var(--dsw-alias-label-tertiary); }
+      .shd-stat-details dt, .shd-stat-details dd { min-width: 0; margin: 0; }
+      .shd-stat-details dd { color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; text-align: right; }
       .shd-input { width: 84px; box-sizing: border-box; border: 1px solid var(--dsw-alias-border-l2);
         border-radius: 6px; padding: 2px 6px; font-size: 12px; font-family: inherit; text-align: right;
         background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); }
@@ -133,14 +153,34 @@ window.__ModuleLoader__.load({
       return `${Math.floor(minutes / 60)}小时${pad2(minutes % 60)}分`
     }
 
-    // One isolated ticker: the elapsed reading refreshes every second without
-    // re-rendering the turn pill, its ring, or the settings panel.
-    function StartClock({ startedAt }) {
+    // Run time is the sum of each turn's span: idle time between turns is not
+    // billed, and the open turn is added live from its start timestamp.
+    function runTotalMs(runMs, runStartedAt, now) {
+      const closed = Number.isFinite(runMs) && runMs > 0 ? runMs : 0
+      const open = Number.isFinite(runStartedAt) && runStartedAt > 0 && Number.isFinite(now)
+        ? Math.max(0, now - runStartedAt)
+        : 0
+      return closed + open
+    }
+
+    // Ticking clock shared by the pill and the panel: while a turn is open the
+    // reading follows it per second; an idle session does not schedule a timer.
+    function useTickNow(runStartedAt) {
+      const active = Number.isFinite(runStartedAt) && runStartedAt > 0
       const [now, setNow] = useState(() => Date.now())
       useEffect(() => {
+        if (!active) return undefined
+        setNow(Date.now())
         const timer = window.setInterval(() => setNow(Date.now()), 1000)
         return () => window.clearInterval(timer)
-      }, [startedAt])
+      }, [active, runStartedAt])
+      return now
+    }
+
+    // One isolated ticker: only an open turn advances the reading, and it
+    // refreshes without re-rendering the turn pill, its ring, or the panel.
+    function StartClock({ startedAt, runMs, runStartedAt }) {
+      const now = useTickNow(runStartedAt)
       return h('span', {
         className: 'shd-clock',
         title: `会话启动于 ${fullClockText(startedAt)}`,
@@ -148,8 +188,14 @@ window.__ModuleLoader__.load({
       h('span', { className: 'shd-clock-key' }, '启动'),
       h('span', { className: 'shd-clock-value' }, startClockText(startedAt, now)),
       h('span', { className: 'shd-clock-sep', 'aria-hidden': 'true' }, '·'),
-      h('span', { className: 'shd-clock-key' }, '持续'),
-      h('span', { className: 'shd-clock-value' }, elapsedText(now - startedAt)))
+      h('span', { className: 'shd-clock-key' }, '工作时间'),
+      h('span', { className: 'shd-clock-value' }, elapsedText(runTotalMs(runMs, runStartedAt, now))))
+    }
+
+    // The same total rendered inside the clock panel, ticking while a turn runs.
+    function WorkTotal({ runMs, runStartedAt }) {
+      const now = useTickNow(runStartedAt)
+      return h('span', null, elapsedText(runTotalMs(runMs, runStartedAt, now)))
     }
 
     async function post(body) {
@@ -197,6 +243,7 @@ window.__ModuleLoader__.load({
       const guard = read('session-handoff')
 
       const [open, setOpen] = useState(false)
+      const [clockOpen, setClockOpen] = useState(false)
       const [draft, setDraft] = useState(null)
       const [override, setOverride] = useState(null)
       const [busy, setBusy] = useState(false)
@@ -211,13 +258,16 @@ window.__ModuleLoader__.load({
       const transient = projectionPhase === 'awaiting-handoff' || projectionPhase === 'transferring'
 
       useEffect(() => {
-        if (!open) return undefined
+        if (!open && !clockOpen) return undefined
         const onPointerDown = (event) => {
           if (event.target instanceof Node && rootRef.current?.contains(event.target) === true) return
           setOpen(false)
+          setClockOpen(false)
         }
         const onKeyDown = (event) => {
-          if (event.key === 'Escape') setOpen(false)
+          if (event.key !== 'Escape') return
+          setOpen(false)
+          setClockOpen(false)
         }
         document.addEventListener('pointerdown', onPointerDown)
         document.addEventListener('keydown', onKeyDown)
@@ -225,7 +275,7 @@ window.__ModuleLoader__.load({
           document.removeEventListener('pointerdown', onPointerDown)
           document.removeEventListener('keydown', onKeyDown)
         }
-      }, [open])
+      }, [open, clockOpen])
 
       // The host finishes the transfer after the last turn is committed, so the
       // projection push never reaches this page. Ask the read-only probe while a
@@ -279,6 +329,14 @@ window.__ModuleLoader__.load({
       if (guard === undefined) return null
 
       const startedAt = Number.isFinite(guard.startedAt) && guard.startedAt > 0 ? guard.startedAt : 0
+      const runMs = Number.isFinite(guard.runMs) && guard.runMs > 0 ? guard.runMs : 0
+      const runStartedAt = Number.isFinite(guard.runStartedAt) && guard.runStartedAt > 0 ? guard.runStartedAt : 0
+      const lastTurnEndedAt = Number.isFinite(guard.lastTurnEndedAt) && guard.lastTurnEndedAt > 0
+        ? guard.lastTurnEndedAt
+        : 0
+      // The run reading needs the host half that reports turn spans; a host
+      // from before that field keeps the turn-only status bar.
+      const clockVisible = startedAt > 0 && Number.isFinite(guard.runMs)
 
       const settings = override || {
         maxRounds: guard.maxRounds,
@@ -309,6 +367,7 @@ window.__ModuleLoader__.load({
           setDraft(null)
           return
         }
+        setClockOpen(false)
         setDraft({
           maxRounds: String(maxRounds),
           enabled: settings.enabled !== false,
@@ -317,6 +376,20 @@ window.__ModuleLoader__.load({
         setNotice(null)
         setError(null)
         setOpen(true)
+      }
+
+      // The clock pill opens the read-only time panel; the two panels are
+      // mutually exclusive and share the same outside-click/Escape close.
+      const toggleClock = () => {
+        if (clockOpen) {
+          setClockOpen(false)
+          return
+        }
+        setOpen(false)
+        setDraft(null)
+        setNotice(null)
+        setError(null)
+        setClockOpen(true)
       }
 
       const save = async () => {
@@ -447,35 +520,81 @@ window.__ModuleLoader__.load({
             h('button', { className: 'shd-btn shd-btn-primary', type: 'button', disabled: busy, onClick: save }, busy ? '保存中…' : '保存')))
         : null
 
+      // The clock/token panels share one stat-dialog skin: icon + title, a rule,
+      // then right-aligned dt/dd rows.
+      const clockIcon = h('svg', {
+        viewBox: '0 0 16 16',
+        width: 14,
+        height: 14,
+        fill: 'none',
+        strokeWidth: 1,
+        'aria-hidden': 'true',
+      },
+      h('path', {
+        d: 'M8 14C11.3137 14 14 11.3137 14 8C14 4.68629 11.3137 2 8 2C4.68629 2 2 4.68629 2 8C2 11.3137 4.68629 14 8 14Z',
+        stroke: 'currentColor',
+      }),
+      h('path', { d: 'M8 4.31V8.46L11 10.08', stroke: 'currentColor' }))
+
+      const clockPanel = clockOpen && clockVisible
+        ? h('div', { className: 'shd-stat-panel', role: 'dialog', 'aria-label': '工时记录' },
+          h('div', { className: 'shd-stat-title' },
+            h('span', { className: 'shd-stat-title-label' },
+              clockIcon,
+              h('span', null, '工时记录'))),
+          h('div', { className: 'shd-stat-rule', 'aria-hidden': 'true' }),
+          h('dl', { className: 'shd-stat-details' },
+            h('dt', null, '启动时间'),
+            h('dd', null, fullClockText(startedAt)),
+            h('dt', null, '最后对话结束时间'),
+            h('dd', null, lastTurnEndedAt > 0 ? fullClockText(lastTurnEndedAt) : '—'),
+            h('dt', null, '总工作时间'),
+            h('dd', null, h(WorkTotal, { runMs, runStartedAt }))))
+        : null
+
       return h('div', { className: 'shd-root', ref: rootRef },
         h('style', null, CSS),
-        startedAt > 0 ? h(StartClock, { startedAt }) : null,
-        startedAt > 0 ? h('span', { className: 'shd-divider', 'aria-hidden': 'true' }) : null,
-        h('button', {
-          type: 'button',
-          className: 'shd-trigger',
-          'aria-haspopup': 'dialog',
-          'aria-expanded': open,
-          'aria-label': `会话交接：${startedAt > 0 ? `启动于 ${fullClockText(startedAt)}，` : ''}轮次 ${turns}/${maxRounds}${transferred ? '，已交接' : ''}`,
-          title: hint ?? undefined,
-          onClick: toggle,
-        },
-        h('svg', { viewBox: '0 0 14 14', width: 14, height: 14, 'aria-hidden': true },
-          h('circle', { className: 'shd-ring-track', cx: 7, cy: 7, r: RADIUS }),
-          h('circle', {
-            className: 'shd-ring-fill' + ringTone,
-            cx: 7,
-            cy: 7,
-            r: RADIUS,
-            strokeDasharray: `${CIRCUMFERENCE * ratio} ${CIRCUMFERENCE}`,
-            transform: 'rotate(-90 7 7)',
-          })),
-        h('span', null, '轮次'),
-        h('span', { className: 'shd-count' + (transferred ? ' shd-done' : countTone) }, `${turns}/${maxRounds}`),
-        transferred
-          ? h('span', { className: 'shd-done' }, '· 已交接')
-          : tier === 3 ? h('span', { className: 'shd-sev-error' }, '· 开会话') : null),
-        panel)
+        clockVisible
+          ? h('span', { className: 'shd-anchor' },
+            h('button', {
+              type: 'button',
+              // No aria-label: the live text ("启动 … · 工作时间 …") is the
+              // accessible name, so assistive tech reads the current reading.
+              className: 'shd-trigger shd-clock-trigger',
+              'aria-haspopup': 'dialog',
+              'aria-expanded': clockOpen,
+              onClick: toggleClock,
+            },
+            h(StartClock, { startedAt, runMs, runStartedAt })),
+            clockPanel)
+          : null,
+        clockVisible ? h('span', { className: 'shd-divider', 'aria-hidden': 'true' }) : null,
+        h('span', { className: 'shd-anchor' },
+          h('button', {
+            type: 'button',
+            className: 'shd-trigger',
+            'aria-haspopup': 'dialog',
+            'aria-expanded': open,
+            'aria-label': `会话交接：${startedAt > 0 ? `启动于 ${fullClockText(startedAt)}，` : ''}轮次 ${turns}/${maxRounds}${transferred ? '，已交接' : ''}`,
+            title: hint ?? undefined,
+            onClick: toggle,
+          },
+          h('svg', { viewBox: '0 0 14 14', width: 14, height: 14, 'aria-hidden': true },
+            h('circle', { className: 'shd-ring-track', cx: 7, cy: 7, r: RADIUS }),
+            h('circle', {
+              className: 'shd-ring-fill' + ringTone,
+              cx: 7,
+              cy: 7,
+              r: RADIUS,
+              strokeDasharray: `${CIRCUMFERENCE * ratio} ${CIRCUMFERENCE}`,
+              transform: 'rotate(-90 7 7)',
+            })),
+          h('span', null, '轮次'),
+          h('span', { className: 'shd-count' + (transferred ? ' shd-done' : countTone) }, `${turns}/${maxRounds}`),
+          transferred
+            ? h('span', { className: 'shd-done' }, '· 已交接')
+            : tier === 3 ? h('span', { className: 'shd-sev-error' }, '· 开会话') : null),
+          panel))
     }
 
     return {
@@ -490,7 +609,7 @@ window.__ModuleLoader__.load({
       },
       // Pure display formatters, exported so the clock's date/duration buckets
       // stay covered by a plain unit test.
-      clock: { startClockText, fullClockText, elapsedText },
+      clock: { startClockText, fullClockText, elapsedText, runTotalMs },
     }
   },
 })
