@@ -1,4 +1,9 @@
-# 会话交接（@local/dsh-session-handoff）
+# 会话交接（Session Handoff）· DSH 插件
+
+> 常驻显示当前对话轮次；达到可配置上限时，先让模型写出交接文件，再自动把任务转移到一个新会话继续。
+> A DeepSeek Harness plugin that shows the live turn count and hands the current task off to a fresh session at a configurable limit.
+
+[English](#english) · [安装](#安装与更新) · [License](#license)
 
 在 DeepSeek Harness Web 界面的输入框下方常驻一条状态栏，显示当前会话的执行轮次（对话轮次），并在轮次达到上限时，让模型先写一份交接文件，再把任务转移到新会话继续。
 
@@ -16,7 +21,7 @@
 
 ## 交接流程
 
-1. 在 `turn/end` 之后判定：轮次 ≥ 最大轮次（默认 100）。
+1. 在 `turn/end` 之后判定：轮次 ≥ 最大轮次（默认 50）。
 2. 向当前会话注入一条交接指令（`agent.followup`，等 agent 空闲后发送），要求模型用 `write` 写出交接文件，包含任务目标、当前进度、未完成事项、关键文件、决策与约束、待确认问题、环境信息。
 3. 交接那一轮结束后：
    - 文件存在 → 创建新会话（沿用原工作目录与**当前选中的 agent preset**），并把「先读交接文件再继续」的提示发给新会话；
@@ -37,7 +42,7 @@
 
 - 设置文件：`$DSH_PROFILE_DIR/session-handoff.settings.json`（没有 `DSH_PROFILE_DIR` 时用 `$DSH_HOME/session-handoff.settings.json`）。
 - 交接状态文件：同目录的 `session-handoff.state.json`，按会话记录 `phase` / `handoffFile` / `newSessionId`，只保留 7 天内、最多 500 条。
-- 默认值：`enabled: true`、`autoHandoff: true`、`maxRounds: 100`、`handoffDir: tmp/handoff`。
+- 默认值：`enabled: true`、`autoHandoff: true`、`maxRounds: 50`、`handoffDir: tmp/handoff`。
 - 宿主编排行：`cordis.patch.yml` 插入 `session-handoff` 行（包根 `index.js`）；浏览器半边由 `package.json` 的 `dsh.client` 声明，注册到 `conversation.composer.dock`。
 
 ## 本机接口
@@ -46,7 +51,7 @@
 
 - `GET /session-handoff/api` → `{ settings, file, stateFile, source }`
 - `GET /session-handoff/api?session=<sessionId>` → 该会话的轮次与交接阶段（只对进程内活跃会话有效）
-- `POST` `{ "action": "settings", "maxRounds": 100, "enabled": true, "autoHandoff": true }`
+- `POST` `{ "action": "settings", "maxRounds": 50, "enabled": true, "autoHandoff": true }`
 - `POST` `{ "action": "handoff", "sessionId": "<sessionId>" }`（该会话已在交接流程中时返回 409）
 
 跨站请求（`Origin` 不匹配 或 `Sec-Fetch-Site` 非 `same-origin`）一律 403。
@@ -54,18 +59,18 @@
 ## 测试
 
 ```
-cd tmp/dsh-session-handoff && bun test
+bun test
 ```
 
 单测用模拟的宿主上下文覆盖：只交接一次、重复 `turn/end` 不重复开会话、插件重载后不重复交接、重载后从交接文件/续接提示恢复状态、续接沿用选中 preset、交接中拒绝重复请求。
 
 ## 安装与更新
 
-源码仓库：`~/Codes/dsh-session-handoff`（独立 git 仓库；DSH 桌面 profile 以 `link:` 依赖指向它）。
+仓库：<https://github.com/xiaohui-zhangxh/dsh-session-handoff>；DSH 桌面 profile 以 `link:` 依赖指向它。
 
 ```bash
-# 首次安装，或仓库位置变化后重新指向
-dsh plugin --profile desktop add /Users/xiaohui/Codes/dsh-session-handoff
+git clone https://github.com/xiaohui-zhangxh/dsh-session-handoff.git
+dsh plugin --profile desktop add "$(pwd)/dsh-session-handoff"
 ```
 
 - 安装后 profile 的 `package.json` 依赖为 `link:<仓库路径>`，`dsh.profile.bundles` 里保留 `@local/dsh-session-handoff`。
@@ -73,8 +78,20 @@ dsh plugin --profile desktop add /Users/xiaohui/Codes/dsh-session-handoff
 - `GET /session-handoff/api` 返回的 `source` 是当前进程实际加载的模块文件 URL，可用来确认正在跑哪一份代码。
 - 设置与交接状态在 `~/.dsh/` 下（见上一节），不随仓库迁移。
 
+## English
+
+A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plugin. It keeps a compact turn counter below the composer; when a configurable turn limit is reached it asks the model to write a handoff file, then creates a fresh session with the same workspace and agent preset and sends it a resume prompt. The handoff is durable and idempotent: one session can never spawn more than one continuation, and reopening a handed-off session does not redirect away from it again.
+
+- Requires DSH 0.2.x on the Web/desktop profile (verified on 0.2.1-rc.5).
+- Install: `dsh plugin --profile desktop add <repo dir>`.
+- Tests: `bun test`.
+
 ## 已知边界
 
 - 只处理根会话；子代理（`origin: subagent`）不参与交接。
 - 交接状态文件在 DSH home 下，换 profile 或清空 `~/.dsh` 后会丢失；此时退回交接文件判定（仍不会重复开会话，只是 `已交接 →` 的新会话可能显示为空）。
 - 停止插件或删除本包即移除状态栏与后台判定；已生成的交接文件保留。
+
+## License
+
+[MIT](LICENSE)

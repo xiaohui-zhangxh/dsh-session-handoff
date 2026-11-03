@@ -3,7 +3,7 @@
   "version": "1.1.0",
   "private": true,
   "type": "module",
-  "description": "Live conversation turn monitor with automatic session handoff",
+  "description": "DSH plugin: shows the live conversation turn count and hands the task to a fresh session when a configurable turn limit is reached",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -28,5 +28,18 @@
         "@deepseek-ai/dsh-client-ui-conversation"
       ]
     }
+  },
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "session",
+    "handoff",
+    "turns"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiaohui-zhangxh/dsh-session-handoff.git"
   }
 }
