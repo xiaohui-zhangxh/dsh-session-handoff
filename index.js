@@ -265,7 +265,7 @@ export function apply(ctx, config) {
     const cached = continuations.get(cacheKey)
     // A miss is cached only briefly: the continuation may still be loading.
     if (cached !== undefined && (cached.sessionId !== '' || Date.now() - cached.at <= 30000)) return cached.sessionId
-    const marker = `${MARK} 这是上一会话 ${sessionId} 的交接延续`
+    const marker = `这是上一会话 ${sessionId} 的交接延续`
     const fileLine = typeof handoffFile === 'string' && handoffFile !== '' ? `交接文件：${handoffFile}` : undefined
     let fallback = ''
     let found = ''
@@ -308,7 +308,7 @@ export function apply(ctx, config) {
     if (known !== undefined) {
       if (known.phase === 'transferred' && known.derived === true) {
         const recovered = continuationOf(session.id, known.handoffFile)
-        if (recovered !== known.newSessionId) return remember(session.id, { newSessionId: recovered })
+        if (recovered !== '' && recovered !== known.newSessionId) return remember(session.id, { newSessionId: recovered })
       }
       return known
     }
