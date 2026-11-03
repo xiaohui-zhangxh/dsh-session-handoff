@@ -1,0 +1,3 @@
+- insert:
+    - id: context-guard
+      name: '@local/dsh-context-guard'
