@@ -98,9 +98,18 @@ class TestHost {
   }
 
   makeSession(id, extra = {}) {
+    // An explicit null models a legacy header without a creation time; a
+    // missing value takes the fixed default.
+    const requested = extra.createdAt
+    const createdAt = requested === null
+      ? null
+      : Number.isFinite(requested) ? requested : 1_700_000_000_000
+    const header = { id, cwd: this.cwd, agentPreset: 'standard', origin: undefined, ...extra }
+    if (createdAt === null) delete header.createdAt
+    else header.createdAt = createdAt
     const session = {
       id,
-      header: { id, cwd: this.cwd, agentPreset: 'standard', origin: undefined, ...extra },
+      header,
       events: [],
       snapshotEvents() {
         return this.events
@@ -151,16 +160,7 @@ class TestHost {
     return definition.wire.view({ ...projected, ...overrides })
   }
 
-  async post(action, body = {}) {
-    const chunks = [Buffer.from(JSON.stringify({ action, ...body }))]
-    const request = {
-      method: 'POST',
-      url: '/session-handoff/api',
-      headers: {},
-      async *[Symbol.asyncIterator]() {
-        yield* chunks
-      },
-    }
+  async send(request) {
     let status = 0
     let payload
     const response = {
@@ -172,6 +172,26 @@ class TestHost {
     Object.defineProperty(response, 'statusCode', { get: () => status, set: (value) => { status = value } })
     await this.handler(request, response)
     return { status, body: payload }
+  }
+
+  async post(action, body = {}) {
+    const chunks = [Buffer.from(JSON.stringify({ action, ...body }))]
+    return this.send({
+      method: 'POST',
+      url: '/session-handoff/api',
+      headers: {},
+      async *[Symbol.asyncIterator]() {
+        yield* chunks
+      },
+    })
+  }
+
+  get(sessionId) {
+    return this.send({
+      method: 'GET',
+      url: `/session-handoff/api?session=${encodeURIComponent(sessionId)}`,
+      headers: {},
+    })
   }
 }
 
@@ -322,6 +342,47 @@ describe('session handoff', () => {
     await flush()
     expect(host.creates).toHaveLength(1)
     expect(host.creates[0].agentPreset).toBe('cordis')
+  })
+
+  test('projects the session start time for the status clock', async () => {
+    const { host } = setup({ enabled: true, autoHandoff: true, maxRounds: 10 })
+    const createdAt = 1_700_000_123_456
+    const session = host.makeSession('session-aaaabbbb-cccc-dddd-eeee-aaaabbbbcccc', { createdAt })
+
+    // The projection state owns the start time: its shape change must bump the
+    // version, or a cached row written before the field existed would be served
+    // as current.
+    expect(host.projections.get('session-handoff').stateVersion).toBe(3)
+    expect(host.viewOf(session).startedAt).toBe(createdAt)
+    await host.turns(session, 1, 2)
+    expect(host.viewOf(session).startedAt).toBe(createdAt)
+    expect(host.viewOf(session).turns).toBe(2)
+
+    // The read-only probe keeps its existing contract and exposes the same
+    // value to every consumer.
+    const probe = await host.get(session.id)
+    expect(probe.status).toBe(200)
+    expect(probe.body.startedAt).toBe(createdAt)
+    expect(probe.body.guard.startedAt).toBe(createdAt)
+    expect(probe.body.turns).toBe(2)
+    expect(probe.body.guard.turns).toBe(2)
+    expect(probe.body.guard.phase).toBe('idle')
+
+    // With the session no longer live, only the persisted projection state can
+    // answer: this fails if init never stores the creation time.
+    host.sessionsById.delete(session.id)
+    expect(host.viewOf(session).startedAt).toBe(createdAt)
+  })
+
+  test('reports no start time for a legacy session header', async () => {
+    const { host } = setup({ enabled: true, autoHandoff: true, maxRounds: 10 })
+    const session = host.makeSession('session-aaaabbbb-cccc-dddd-eeee-ddddeeeeffff', { createdAt: null })
+
+    expect(session.header.createdAt).toBeUndefined()
+    expect(host.viewOf(session).startedAt).toBe(0)
+    const probe = await host.get(session.id)
+    expect(probe.status).toBe(200)
+    expect(probe.body.startedAt).toBe(0)
   })
 
   test('refuses a second handoff request while a transfer is pending', async () => {

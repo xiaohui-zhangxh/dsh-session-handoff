@@ -1,9 +1,9 @@
 {
   "name": "@local/dsh-session-handoff",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
-  "description": "DSH plugin: shows the live conversation turn count and hands the task to a fresh session when a configurable turn limit is reached",
+  "description": "DSH plugin: shows the session start time, live elapsed duration, and turn count, and hands the task to a fresh session when a configurable turn limit is reached",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -36,7 +36,8 @@
     "plugin",
     "session",
     "handoff",
-    "turns"
+    "turns",
+    "duration"
   ],
   "repository": {
     "type": "git",

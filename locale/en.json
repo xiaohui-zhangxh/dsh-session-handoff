@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Session Handoff",
-    "description": "Live conversation turn count; when a configurable turn limit is reached, the model writes a handoff file and the task continues in a new session."
+    "description": "Live session start time, elapsed duration, and conversation turn count; when a configurable turn limit is reached, the model writes a handoff file and the task continues in a new session."
   }
 }

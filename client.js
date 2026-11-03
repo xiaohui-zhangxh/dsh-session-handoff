@@ -11,7 +11,15 @@ window.__ModuleLoader__.load({
     let runtimeCtx
 
     const CSS = `
-      .shd-root { position: relative; display: inline-flex; }
+      .shd-root { position: relative; display: inline-flex; align-items: center; gap: 8px; }
+      .shd-clock { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 1;
+        color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));
+        font-variant-numeric: tabular-nums; white-space: nowrap; cursor: default; }
+      .shd-clock-key { color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); }
+      .shd-clock-value { color: var(--dsw-alias-label-secondary); }
+      .shd-clock-sep { color: var(--dsw-alias-label-dimmed, var(--dsw-alias-label-tertiary)); }
+      .shd-divider { flex: none; width: 1px; height: 12px;
+        background: var(--dsw-alias-border-l1, var(--dsw-alias-border-l2)); }
       .shd-trigger { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
         border: none; border-radius: 999px; background: transparent; font-family: inherit;
         font-size: 11px; line-height: 1; color: var(--dsw-alias-label-secondary); cursor: pointer; }
@@ -93,6 +101,55 @@ window.__ModuleLoader__.load({
     const PHASE_TEXT = {
       'awaiting-handoff': '正在写交接文件…',
       'transferring': '正在创建接续会话…',
+    }
+
+    const pad2 = (value) => String(value).padStart(2, '0')
+
+    // Start wall clock: same-day labels stay short (14:32); an older session
+    // also names its date (11-02 14:32).
+    function startClockText(startedAt, now) {
+      const start = new Date(startedAt)
+      const current = new Date(now)
+      const hourMinute = `${pad2(start.getHours())}:${pad2(start.getMinutes())}`
+      const sameDay = start.getFullYear() === current.getFullYear()
+        && start.getMonth() === current.getMonth()
+        && start.getDate() === current.getDate()
+      return sameDay ? hourMinute : `${pad2(start.getMonth() + 1)}-${pad2(start.getDate())} ${hourMinute}`
+    }
+
+    function fullClockText(startedAt) {
+      const start = new Date(startedAt)
+      return `${start.getFullYear()}-${pad2(start.getMonth() + 1)}-${pad2(start.getDate())}`
+        + ` ${pad2(start.getHours())}:${pad2(start.getMinutes())}:${pad2(start.getSeconds())}`
+    }
+
+    // Elapsed duration: seconds keep the reading alive under a minute and for
+    // the first hour; longer sessions show whole hours plus minutes.
+    function elapsedText(ms) {
+      const total = Math.max(0, Math.floor(ms / 1000))
+      if (total < 60) return `${total}秒`
+      const minutes = Math.floor(total / 60)
+      if (minutes < 60) return `${minutes}分${pad2(total % 60)}秒`
+      return `${Math.floor(minutes / 60)}小时${pad2(minutes % 60)}分`
+    }
+
+    // One isolated ticker: the elapsed reading refreshes every second without
+    // re-rendering the turn pill, its ring, or the settings panel.
+    function StartClock({ startedAt }) {
+      const [now, setNow] = useState(() => Date.now())
+      useEffect(() => {
+        const timer = window.setInterval(() => setNow(Date.now()), 1000)
+        return () => window.clearInterval(timer)
+      }, [startedAt])
+      return h('span', {
+        className: 'shd-clock',
+        title: `会话启动于 ${fullClockText(startedAt)}`,
+      },
+      h('span', { className: 'shd-clock-key' }, '启动'),
+      h('span', { className: 'shd-clock-value' }, startClockText(startedAt, now)),
+      h('span', { className: 'shd-clock-sep', 'aria-hidden': 'true' }, '·'),
+      h('span', { className: 'shd-clock-key' }, '持续'),
+      h('span', { className: 'shd-clock-value' }, elapsedText(now - startedAt)))
     }
 
     async function post(body) {
@@ -220,6 +277,8 @@ window.__ModuleLoader__.load({
       }, [settled, effective, sessionId])
 
       if (guard === undefined) return null
+
+      const startedAt = Number.isFinite(guard.startedAt) && guard.startedAt > 0 ? guard.startedAt : 0
 
       const settings = override || {
         maxRounds: guard.maxRounds,
@@ -390,12 +449,14 @@ window.__ModuleLoader__.load({
 
       return h('div', { className: 'shd-root', ref: rootRef },
         h('style', null, CSS),
+        startedAt > 0 ? h(StartClock, { startedAt }) : null,
+        startedAt > 0 ? h('span', { className: 'shd-divider', 'aria-hidden': 'true' }) : null,
         h('button', {
           type: 'button',
           className: 'shd-trigger',
           'aria-haspopup': 'dialog',
           'aria-expanded': open,
-          'aria-label': `会话交接：轮次 ${turns}/${maxRounds}${transferred ? '，已交接' : ''}`,
+          'aria-label': `会话交接：${startedAt > 0 ? `启动于 ${fullClockText(startedAt)}，` : ''}轮次 ${turns}/${maxRounds}${transferred ? '，已交接' : ''}`,
           title: hint ?? undefined,
           onClick: toggle,
         },
@@ -427,6 +488,9 @@ window.__ModuleLoader__.load({
           order: 20,
         }, Guard))
       },
+      // Pure display formatters, exported so the clock's date/duration buckets
+      // stay covered by a plain unit test.
+      clock: { startClockText, fullClockText, elapsedText },
     }
   },
 })

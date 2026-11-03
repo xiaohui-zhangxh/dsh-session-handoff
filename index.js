@@ -153,6 +153,15 @@ function userTextMessage(text) {
   }
 }
 
+// The session's start is its header creation time. Older projection rows and
+// test fixtures may lack it, so every reader falls back to the live header.
+function sessionStartedAt(session, state) {
+  const stored = state === undefined ? Number.NaN : Number(state.startedAt)
+  if (Number.isFinite(stored) && stored > 0) return stored
+  const live = session === undefined ? Number.NaN : Number(session.header?.createdAt)
+  return Number.isFinite(live) && live > 0 ? live : 0
+}
+
 function sendJson(response, status, body) {
   response.statusCode = status
   response.setHeader('content-type', 'application/json; charset=utf-8')
@@ -574,6 +583,9 @@ export function apply(ctx, config) {
     const meta = session === undefined ? phases.get(state.sessionId) : metaForSession(session, state)
     return {
       turns: state.turns,
+      // Epoch milliseconds of the session's creation, so the status bar can show
+      // the start clock and a live elapsed duration without another request.
+      startedAt: sessionStartedAt(session, state),
       phase: meta?.phase ?? state.phase,
       handoffFile: meta?.handoffFile ?? state.handoffFile,
       newSessionId: meta?.newSessionId ?? state.newSessionId,
@@ -586,9 +598,17 @@ export function apply(ctx, config) {
 
   const projectionDefinition = {
     key: KEY,
-    stateVersion: 2,
+    stateVersion: 3,
     stateSchema: { parse: (value) => value },
-    init: (header) => ({ sessionId: String(header.id), turns: 0, phase: 'idle', handoffFile: '', newSessionId: '', note: '' }),
+    init: (header) => ({
+      sessionId: String(header.id),
+      turns: 0,
+      startedAt: Number.isFinite(header.createdAt) && header.createdAt > 0 ? header.createdAt : 0,
+      phase: 'idle',
+      handoffFile: '',
+      newSessionId: '',
+      note: '',
+    }),
     apply: (state, event) => {
       if (event.type === 'turn/start') {
         if (event.data.turn === state.turns) return state
@@ -648,10 +668,14 @@ export function apply(ctx, config) {
           const meta = metaForSession(session, state)
           sendJson(response, 200, {
             session: probe,
+            startedAt: sessionStartedAt(session, state),
             guard: state === undefined && meta === undefined
               ? undefined
               : {
                   ...(state ?? { sessionId: probe }),
+                  // The nested view must agree with the top-level field: a legacy
+                  // state row may carry 0 while the live header still knows it.
+                  startedAt: sessionStartedAt(session, state),
                   phase: meta?.phase ?? state?.phase ?? 'idle',
                   handoffFile: meta?.handoffFile ?? state?.handoffFile ?? '',
                   newSessionId: meta?.newSessionId ?? state?.newSessionId ?? '',
