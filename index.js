@@ -2,9 +2,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-const KEY = 'context-guard'
-const ROUTE = '/context-guard/api'
-const MARK = '[上下文守卫]'
+const KEY = 'session-handoff'
+const ROUTE = '/session-handoff/api'
+const MARK = '[会话交接]'
 const STATE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const STATE_MAX_SESSIONS = 500
 const DERIVED_NOTES = ['已生成交接文件', '此前已生成交接文件']
@@ -20,11 +20,11 @@ function guardHomeDir() {
 }
 
 function settingsFile() {
-  return path.join(guardHomeDir(), 'context-guard.settings.json')
+  return path.join(guardHomeDir(), 'session-handoff.settings.json')
 }
 
 function stateFile() {
-  return path.join(guardHomeDir(), 'context-guard.state.json')
+  return path.join(guardHomeDir(), 'session-handoff.state.json')
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -51,7 +51,7 @@ function readStoredSettings(logger) {
     return JSON.parse(fs.readFileSync(settingsFile(), 'utf8'))
   } catch (error) {
     if (error !== null && typeof error === 'object' && error.code === 'ENOENT') return {}
-    logger(`上下文守卫：读取设置失败（使用默认值）：${describeError(error)}`)
+    logger(`会话交接：读取设置失败（使用默认值）：${describeError(error)}`)
     return {}
   }
 }
@@ -63,7 +63,7 @@ function writeStoredSettings(settings, logger) {
     fs.writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`, 'utf8')
     return true
   } catch (error) {
-    logger(`上下文守卫：保存设置失败：${describeError(error)}`)
+    logger(`会话交接：保存设置失败：${describeError(error)}`)
     return false
   }
 }
@@ -93,7 +93,7 @@ function readStoredPhases(logger) {
     parsed = JSON.parse(fs.readFileSync(stateFile(), 'utf8'))
   } catch (error) {
     if (error !== null && typeof error === 'object' && error.code === 'ENOENT') return {}
-    logger(`上下文守卫：读取交接状态失败（忽略并重建）：${describeError(error)}`)
+    logger(`会话交接：读取交接状态失败（忽略并重建）：${describeError(error)}`)
     return {}
   }
   const sessions = parsed !== null && typeof parsed === 'object' ? parsed.sessions : undefined
@@ -117,11 +117,11 @@ function writeStoredPhases(sessions, logger) {
     fs.renameSync(temp, file)
     return true
   } catch (error) {
-    logger(`上下文守卫：保存交接状态失败：${describeError(error)}`)
+    logger(`会话交接：保存交接状态失败：${describeError(error)}`)
     try {
       fs.unlinkSync(temp)
     } catch (cleanupError) {
-      logger(`上下文守卫：清理临时状态文件失败：${describeError(cleanupError)}`)
+      logger(`会话交接：清理临时状态文件失败：${describeError(cleanupError)}`)
     }
     return false
   }
@@ -198,7 +198,7 @@ export function apply(ctx, config) {
     try {
       return webServer?.getOrigin?.()
     } catch (error) {
-      logger(`上下文守卫：读取服务地址失败：${describeError(error)}`)
+      logger(`会话交接：读取服务地址失败：${describeError(error)}`)
       return undefined
     }
   }
@@ -235,7 +235,7 @@ export function apply(ctx, config) {
       const workingDirectory = ctx.get('workingDirectory')
       if (workingDirectory !== undefined) return workingDirectory.get(session)
     } catch (error) {
-      logger(`上下文守卫：解析会话目录失败：${describeError(error)}`)
+      logger(`会话交接：解析会话目录失败：${describeError(error)}`)
     }
     return session.header.cwd ?? process.cwd()
   }
@@ -251,7 +251,7 @@ export function apply(ctx, config) {
     try {
       for (const entry of fs.readdirSync(dir)) if (entry.includes(token) && entry.endsWith('.md')) return path.join(dir, entry)
     } catch (error) {
-      if (error === null || typeof error !== 'object' || error.code !== 'ENOENT') logger(`上下文守卫：扫描交接目录失败：${describeError(error)}`)
+      if (error === null || typeof error !== 'object' || error.code !== 'ENOENT') logger(`会话交接：扫描交接目录失败：${describeError(error)}`)
     }
     return undefined
   }
@@ -284,7 +284,7 @@ export function apply(ctx, config) {
         if (fallback === '') fallback = other.id
       }
     } catch (error) {
-      logger(`上下文守卫：查找接续会话失败：${describeError(error)}`)
+      logger(`会话交接：查找接续会话失败：${describeError(error)}`)
     }
     const result = found !== '' ? found : fallback
     continuations.set(cacheKey, { sessionId: result, at: Date.now() })
@@ -418,7 +418,7 @@ export function apply(ctx, config) {
       const selected = ctx.get('sessionProjections')?.stateOf(session, 'agentPreset')
       if (typeof selected === 'string' && selected !== '') return selected
     } catch (error) {
-      logger(`上下文守卫：读取会话预设失败：${describeError(error)}`)
+      logger(`会话交接：读取会话预设失败：${describeError(error)}`)
     }
     return session.header.agentPreset
   }
@@ -426,12 +426,12 @@ export function apply(ctx, config) {
   async function requestHandoff(session, reason) {
     const agent = ctx.get('agents')?.get(session.id)
     if (agent === undefined) {
-      logger(`上下文守卫：会话 ${session.id} 没有 live agent，跳过交接`)
+      logger(`会话交接：会话 ${session.id} 没有 live agent，跳过交接`)
       return false
     }
     const current = metaForSession(session, registry?.stateOf(session, KEY))
     if (current !== undefined && current.phase !== 'reached' && current.phase !== 'failed') {
-      logger(`上下文守卫：会话 ${session.id} 已在交接流程中（${current.phase}），忽略重复请求`)
+      logger(`会话交接：会话 ${session.id} 已在交接流程中（${current.phase}），忽略重复请求`)
       return false
     }
     const file = handoffFileFor(session)
@@ -445,7 +445,7 @@ export function apply(ctx, config) {
     try {
       await sendWhenIdle(agent, userTextMessage(handoffInstruction(file, reason, false)))
     } catch (error) {
-      logger(`上下文守卫：注入交接指令失败：${describeError(error)}`)
+      logger(`会话交接：注入交接指令失败：${describeError(error)}`)
       remember(session.id, { phase: 'failed', note: describeError(error) })
       return false
     }
@@ -463,7 +463,7 @@ export function apply(ctx, config) {
   async function createSessionAndContinue(session, file, reason, fallback) {
     const controller = ctx.get('sessionController')
     if (controller === undefined) {
-      logger('上下文守卫：缺少 sessionController，无法创建接续会话')
+      logger('会话交接：缺少 sessionController，无法创建接续会话')
       remember(session.id, { phase: 'failed', note: 'sessionController 不可用' })
       return
     }
@@ -483,12 +483,12 @@ export function apply(ctx, config) {
         content: [{ type: 'text', text: resumePrompt(session, file, reason, fallback) }],
       }, abort.signal)
     } catch (error) {
-      logger(`上下文守卫：接续会话 ${created.sessionId} 已创建，但续接提示发送失败：${describeError(error)}`)
+      logger(`会话交接：接续会话 ${created.sessionId} 已创建，但续接提示发送失败：${describeError(error)}`)
       remember(session.id, { phase: 'failed', note: `接续会话 ${created.sessionId} 已创建，但续接提示发送失败：${describeError(error)}` })
       return
     }
     remember(session.id, { phase: 'transferred', newSessionId: created.sessionId })
-    logger(`上下文守卫：会话 ${session.id} 已交接给 ${created.sessionId}（${file}）`)
+    logger(`会话交接：会话 ${session.id} 已交接给 ${created.sessionId}（${file}）`)
   }
 
   function scheduleTransfer(session, meta) {
@@ -500,12 +500,12 @@ export function apply(ctx, config) {
       try {
         writeFallbackHandoff(session, meta.handoffFile)
       } catch (error) {
-        logger(`上下文守卫：写兜底交接文件失败：${describeError(error)}`)
+        logger(`会话交接：写兜底交接文件失败：${describeError(error)}`)
       }
     }
     const task = createSessionAndContinue(session, meta.handoffFile, meta.reason ?? '达到上限', fallback)
       .catch((error) => {
-        logger(`上下文守卫：创建接续会话失败：${describeError(error)}`)
+        logger(`会话交接：创建接续会话失败：${describeError(error)}`)
         remember(session.id, { phase: 'failed', note: describeError(error) })
       })
       .finally(() => transfers.delete(session.id))
@@ -521,7 +521,7 @@ export function apply(ctx, config) {
       if (turn <= (meta.handoffAfterTurn ?? 0)) return
       if (!fs.existsSync(meta.handoffFile) && (meta.attempts ?? 0) < 1) {
         void retryHandoff(session, meta).catch((error) => {
-          logger(`上下文守卫：重试交接失败：${describeError(error)}`)
+          logger(`会话交接：重试交接失败：${describeError(error)}`)
           remember(session.id, { phase: 'failed', note: describeError(error) })
         })
         return
@@ -550,7 +550,7 @@ export function apply(ctx, config) {
       return
     }
     void requestHandoff(session, `轮次 ${turns}/${settings.current.maxRounds}`).catch((error) => {
-      logger(`上下文守卫：请求交接失败：${describeError(error)}`)
+      logger(`会话交接：请求交接失败：${describeError(error)}`)
       remember(session.id, { phase: 'failed', note: describeError(error) })
     })
   }
@@ -564,7 +564,7 @@ export function apply(ctx, config) {
       try {
         onTurnEnd(session, turn)
       } catch (error) {
-        logger(`上下文守卫：轮次处理失败：${describeError(error)}`)
+        logger(`会话交接：轮次处理失败：${describeError(error)}`)
       }
     })
   })

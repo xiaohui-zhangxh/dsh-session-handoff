@@ -146,8 +146,8 @@ class TestHost {
   // The plugin's projection view is what the Web client reads; exercise it the
   // way the real registry does (watermark fold then wire view).
   viewOf(session, overrides = {}) {
-    const definition = this.projections.get('context-guard')
-    const projected = this.registry.stateOf(session, 'context-guard')
+    const definition = this.projections.get('session-handoff')
+    const projected = this.registry.stateOf(session, 'session-handoff')
     return definition.wire.view({ ...projected, ...overrides })
   }
 
@@ -155,7 +155,7 @@ class TestHost {
     const chunks = [Buffer.from(JSON.stringify({ action, ...body }))]
     const request = {
       method: 'POST',
-      url: '/context-guard/api',
+      url: '/session-handoff/api',
       headers: {},
       async *[Symbol.asyncIterator]() {
         yield* chunks
@@ -196,7 +196,7 @@ function handoffFileFor(cwd, sessionId) {
 }
 
 function readStateFile(home) {
-  return JSON.parse(fs.readFileSync(path.join(home, 'context-guard.state.json'), 'utf8'))
+  return JSON.parse(fs.readFileSync(path.join(home, 'session-handoff.state.json'), 'utf8'))
 }
 
 beforeEach(() => {
@@ -216,7 +216,7 @@ function setup(config) {
   return { home, cwd, host }
 }
 
-describe('context guard handoff', () => {
+describe('session handoff', () => {
   test('hands off once and only once when the limit is reached', async () => {
     const { home, cwd, host } = setup({ enabled: true, autoHandoff: true, maxRounds: 10 })
     const session = host.makeSession('session-aaaabbbb-cccc-dddd-eeee-11112222aaaa')
@@ -229,7 +229,7 @@ describe('context guard handoff', () => {
 
     writeHandoff(file)
     host.event(session, 'turn/start', { turn: 11 })
-    host.event(session, 'user/message', { content: [{ type: 'text', text: '[上下文守卫] 交接' }] })
+    host.event(session, 'user/message', { content: [{ type: 'text', text: '[会话交接] 交接' }] })
     host.event(session, 'assistant/message', { message: { content: [{ type: 'text', text: `交接完成: ${file}` }] } })
     // The Host appends one turn/end per turn; a duplicated observation must not
     // spawn a second continuation.
@@ -294,10 +294,10 @@ describe('context guard handoff', () => {
     // over the one whose resume prompt names this handoff file.
     const staleId = 'session-11112222-3333-4444-5555-666677778888aaa1'
     const stale = restarted.makeSession(staleId)
-    stale.events.push({ type: 'user/message', data: { content: [{ type: 'text', text: `[上下文守卫] 这是上一会话 ${oldId} 的交接延续。\n交接文件：${path.join(cwd, 'tmp', 'handoff', 'old.md')}` }] } })
+    stale.events.push({ type: 'user/message', data: { content: [{ type: 'text', text: `[会话交接] 这是上一会话 ${oldId} 的交接延续。\n交接文件：${path.join(cwd, 'tmp', 'handoff', 'old.md')}` }] } })
     const continuationId = 'session-99998888-7777-6666-5555-444433332222dddd'
     const continuation = restarted.makeSession(continuationId)
-    continuation.events.push({ type: 'user/message', data: { content: [{ type: 'text', text: `[上下文守卫] 这是上一会话 ${oldId} 的交接延续。\n交接文件：${file}` }] } })
+    continuation.events.push({ type: 'user/message', data: { content: [{ type: 'text', text: `[会话交接] 这是上一会话 ${oldId} 的交接延续。\n交接文件：${file}` }] } })
     restarted.sessionsById.set(oldId, session)
 
     const view = restarted.viewOf(session)

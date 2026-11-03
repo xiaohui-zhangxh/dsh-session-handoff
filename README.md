@@ -1,4 +1,4 @@
-# 上下文守卫（@local/dsh-context-guard）
+# 会话交接（@local/dsh-session-handoff）
 
 在 DeepSeek Harness Web 界面的输入框下方常驻一条状态栏，显示当前会话的执行轮次（对话轮次），并在轮次达到上限时，让模型先写一份交接文件，再把任务转移到新会话继续。
 
@@ -22,7 +22,7 @@
    - 文件存在 → 创建新会话（沿用原工作目录与**当前选中的 agent preset**），并把「先读交接文件再继续」的提示发给新会话；
    - 文件缺失 → 重试一次；仍缺失则用会话日志生成兜底交接文件，再转移。
 4. 每个会话最多交接一次：
-   - 交接阶段同时写进内存与 `context-guard.state.json`，插件/宿主重载后仍然有效；
+   - 交接阶段同时写进内存与 `session-handoff.state.json`，插件/宿主重载后仍然有效；
    - 转移期间有进程内互斥锁，「同一轮次里重复的 turn/end」「重复点击立即交接」都不会创建第二个接续会话；
    - 状态文件丢失时，仍可用交接目录里的交接文件判定（文件名含会话短 id）。
 5. 插件重载后第一次看到旧会话时，会用交接文件 + 接续会话里的续接提示（`这是上一会话 <旧会话> 的交接延续`，优先匹配本次交接文件路径）重建「已交接 → 接续会话」状态，不再触发新会话。
@@ -35,17 +35,17 @@
 
 ## 设置与存储
 
-- 设置文件：`$DSH_PROFILE_DIR/context-guard.settings.json`（没有 `DSH_PROFILE_DIR` 时用 `$DSH_HOME/context-guard.settings.json`）。
-- 交接状态文件：同目录的 `context-guard.state.json`，按会话记录 `phase` / `handoffFile` / `newSessionId`，只保留 7 天内、最多 500 条。
+- 设置文件：`$DSH_PROFILE_DIR/session-handoff.settings.json`（没有 `DSH_PROFILE_DIR` 时用 `$DSH_HOME/session-handoff.settings.json`）。
+- 交接状态文件：同目录的 `session-handoff.state.json`，按会话记录 `phase` / `handoffFile` / `newSessionId`，只保留 7 天内、最多 500 条。
 - 默认值：`enabled: true`、`autoHandoff: true`、`maxRounds: 100`、`handoffDir: tmp/handoff`。
-- 宿主编排行：`cordis.patch.yml` 插入 `context-guard` 行（包根 `index.js`）；浏览器半边由 `package.json` 的 `dsh.client` 声明，注册到 `conversation.composer.dock`。
+- 宿主编排行：`cordis.patch.yml` 插入 `session-handoff` 行（包根 `index.js`）；浏览器半边由 `package.json` 的 `dsh.client` 声明，注册到 `conversation.composer.dock`。
 
 ## 本机接口
 
-`http://127.0.0.1:<web 端口>/context-guard/api`
+`http://127.0.0.1:<web 端口>/session-handoff/api`
 
-- `GET /context-guard/api` → `{ settings, file, stateFile, source }`
-- `GET /context-guard/api?session=<sessionId>` → 该会话的轮次与交接阶段（只对进程内活跃会话有效）
+- `GET /session-handoff/api` → `{ settings, file, stateFile, source }`
+- `GET /session-handoff/api?session=<sessionId>` → 该会话的轮次与交接阶段（只对进程内活跃会话有效）
 - `POST` `{ "action": "settings", "maxRounds": 100, "enabled": true, "autoHandoff": true }`
 - `POST` `{ "action": "handoff", "sessionId": "<sessionId>" }`（该会话已在交接流程中时返回 409）
 
@@ -54,23 +54,23 @@
 ## 测试
 
 ```
-cd tmp/dsh-context-guard && bun test
+cd tmp/dsh-session-handoff && bun test
 ```
 
 单测用模拟的宿主上下文覆盖：只交接一次、重复 `turn/end` 不重复开会话、插件重载后不重复交接、重载后从交接文件/续接提示恢复状态、续接沿用选中 preset、交接中拒绝重复请求。
 
 ## 安装与更新
 
-源码仓库：`~/Codes/dsh-context-guard`（独立 git 仓库；DSH 桌面 profile 以 `link:` 依赖指向它）。
+源码仓库：`~/Codes/dsh-session-handoff`（独立 git 仓库；DSH 桌面 profile 以 `link:` 依赖指向它）。
 
 ```bash
 # 首次安装，或仓库位置变化后重新指向
-dsh plugin --profile desktop add /Users/xiaohui/Codes/dsh-context-guard
+dsh plugin --profile desktop add /Users/xiaohui/Codes/dsh-session-handoff
 ```
 
-- 安装后 profile 的 `package.json` 依赖为 `link:<仓库路径>`，`dsh.profile.bundles` 里保留 `@local/dsh-context-guard`。
+- 安装后 profile 的 `package.json` 依赖为 `link:<仓库路径>`，`dsh.profile.bundles` 里保留 `@local/dsh-session-handoff`。
 - 宿主半边（`index.js`）改动后，运行中的 DSH 不会自动换模块：重启 DSH（或在插件管理里重装）后生效；浏览器半边 `client.js` 由客户端模块轮询自动换新。
-- `GET /context-guard/api` 返回的 `source` 是当前进程实际加载的模块文件 URL，可用来确认正在跑哪一份代码。
+- `GET /session-handoff/api` 返回的 `source` 是当前进程实际加载的模块文件 URL，可用来确认正在跑哪一份代码。
 - 设置与交接状态在 `~/.dsh/` 下（见上一节），不随仓库迁移。
 
 ## 已知边界
