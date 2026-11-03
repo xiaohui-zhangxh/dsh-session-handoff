@@ -44,7 +44,7 @@
 
 `http://127.0.0.1:<web 端口>/context-guard/api`
 
-- `GET /context-guard/api` → `{ settings, file, stateFile }`
+- `GET /context-guard/api` → `{ settings, file, stateFile, source }`
 - `GET /context-guard/api?session=<sessionId>` → 该会话的轮次与交接阶段（只对进程内活跃会话有效）
 - `POST` `{ "action": "settings", "maxRounds": 100, "enabled": true, "autoHandoff": true }`
 - `POST` `{ "action": "handoff", "sessionId": "<sessionId>" }`（该会话已在交接流程中时返回 409）
@@ -58,6 +58,20 @@ cd tmp/dsh-context-guard && bun test
 ```
 
 单测用模拟的宿主上下文覆盖：只交接一次、重复 `turn/end` 不重复开会话、插件重载后不重复交接、重载后从交接文件/续接提示恢复状态、续接沿用选中 preset、交接中拒绝重复请求。
+
+## 安装与更新
+
+源码仓库：`~/Codes/dsh-context-guard`（独立 git 仓库；DSH 桌面 profile 以 `link:` 依赖指向它）。
+
+```bash
+# 首次安装，或仓库位置变化后重新指向
+dsh plugin --profile desktop add /Users/xiaohui/Codes/dsh-context-guard
+```
+
+- 安装后 profile 的 `package.json` 依赖为 `link:<仓库路径>`，`dsh.profile.bundles` 里保留 `@local/dsh-context-guard`。
+- 宿主半边（`index.js`）改动后，运行中的 DSH 不会自动换模块：重启 DSH（或在插件管理里重装）后生效；浏览器半边 `client.js` 由客户端模块轮询自动换新。
+- `GET /context-guard/api` 返回的 `source` 是当前进程实际加载的模块文件 URL，可用来确认正在跑哪一份代码。
+- 设置与交接状态在 `~/.dsh/` 下（见上一节），不随仓库迁移。
 
 ## 已知边界
 
