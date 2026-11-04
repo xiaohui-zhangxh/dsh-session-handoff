@@ -27,9 +27,11 @@ class TestHost {
     this.agents = new Map()
     this.creates = []
     this.prompts = []
+    this.renames = []
     this.logs = []
     this.workspaces = []
     this.createFailure = undefined
+    this.renameFailure = undefined
     this.handler = undefined
     this.listeners = {}
     this.disposers = []
@@ -53,6 +55,11 @@ class TestHost {
       init: (header) => header.agentPreset ?? null,
       apply: (state, event) => (event.type === 'agent-preset/selected' ? event.data.agentPreset : state),
     })
+    self.projections.set('title', {
+      key: 'title',
+      init: () => null,
+      apply: (state, event) => (event.type === 'session/title' ? event.data.title : state),
+    })
     this.services = {
       sessions: { get: (id) => self.sessionsById.get(id), list: () => [...self.sessionsById.values()] },
       sessionProjections: this.registry,
@@ -70,6 +77,11 @@ class TestHost {
         prompt: async (request) => {
           self.prompts.push(request)
           return { accepted: true }
+        },
+        rename: async (request) => {
+          if (self.renameFailure !== undefined) throw self.renameFailure
+          self.renames.push(request)
+          return { title: request.title, seq: 0 }
         },
       },
       workingDirectory: { get: (session) => session.header.cwd },
@@ -226,6 +238,20 @@ function instructionFile(followup) {
 function writeHandoff(file) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, '# handoff\n', 'utf8')
+}
+
+// Drive one complete handoff: turns up to the limit, the injected instruction
+// turn, the handoff file it asks for, and the transfer turn.
+async function handoffOnce(host, session, maxRounds = 10) {
+  host.makeAgent(session.id)
+  await host.turns(session, 1, maxRounds)
+  const followup = host.agents.get(session.id).followups[0]
+  const file = instructionFile(followup)
+  writeHandoff(file)
+  host.event(session, 'turn/start', { turn: maxRounds + 1 })
+  host.event(session, 'turn/end', { turn: maxRounds + 1 })
+  await flush()
+  return file
 }
 
 function handoffDirFor(cwd) {
@@ -408,6 +434,74 @@ describe('session handoff', () => {
     expect(host.creates[0].workspaceId).toBeUndefined()
     expect(host.creates[0].cwd).toBe(cwd)
     expect(host.prompts).toHaveLength(1)
+  })
+
+  test('names the continuation from the source title and chain depth', async () => {
+    const { host } = setup({ enabled: true, autoHandoff: true, maxRounds: 10 })
+    const session = host.makeSession('session-aaaabbbb-cccc-dddd-eeee-a1b2c3d4e5f6')
+    host.event(session, 'session/title', { title: '修复登录问题', messageSeqs: [], source: { kind: 'user' } })
+
+    await handoffOnce(host, session)
+
+    expect(host.renames).toEqual([{ sessionId: host.creates[0].createdId, title: '修复登录问题 第1次交接' }])
+  })
+
+  test('continues the handoff chain on the next session', async () => {
+    const { host } = setup({ enabled: true, autoHandoff: true, maxRounds: 10 })
+    const session = host.makeSession('session-aaaabbbb-cccc-dddd-eeee-b1c2d3e4f5a6')
+    host.event(session, 'session/title', { title: '修复登录问题', messageSeqs: [], source: { kind: 'user' } })
+    await handoffOnce(host, session)
+
+    // The continuation carries the generated title; its next handoff must strip
+    // the marker and advance the depth instead of nesting suffixes.
+    const continuation = host.makeSession(host.creates[0].createdId)
+    host.event(continuation, 'session/title', {
+      title: host.renames[0].title,
+      messageSeqs: [],
+      source: { kind: 'user' },
+    })
+    await handoffOnce(host, continuation)
+
+    expect(host.creates).toHaveLength(2)
+    expect(host.renames[1]).toEqual({ sessionId: host.creates[1].createdId, title: '修复登录问题 第2次交接' })
+  })
+
+  test('falls back to a placeholder base when the source has no title', async () => {
+    const { host } = setup({ enabled: true, autoHandoff: true, maxRounds: 10 })
+    const session = host.makeSession('session-aaaabbbb-cccc-dddd-eeee-99887766aabb')
+
+    await handoffOnce(host, session)
+
+    expect(host.renames).toHaveLength(1)
+    expect(host.renames[0].title).toMatch(/^会话 [A-Za-z0-9]{8} 第1次交接$/)
+  })
+
+  test('keeps the chain marker inside the title byte budget', async () => {
+    const { host } = setup({ enabled: true, autoHandoff: true, maxRounds: 10 })
+    const session = host.makeSession('session-aaaabbbb-cccc-dddd-eeee-ffeeddccbbaa')
+    host.event(session, 'session/title', {
+      title: '很长的标题'.repeat(30),
+      messageSeqs: [],
+      source: { kind: 'user' },
+    })
+
+    await handoffOnce(host, session)
+
+    const title = host.renames[0].title
+    expect(Buffer.byteLength(title, 'utf8')).toBeLessThanOrEqual(80)
+    expect(title.endsWith(' 第1次交接')).toBe(true)
+  })
+
+  test('continues the handoff when naming the continuation fails', async () => {
+    const { host } = setup({ enabled: true, autoHandoff: true, maxRounds: 10 })
+    const session = host.makeSession('session-aaaabbbb-cccc-dddd-eeee-0f1e2d3c4b5a')
+    host.renameFailure = new Error('title service unavailable')
+
+    await handoffOnce(host, session)
+
+    expect(host.logs.some((line) => line.includes('接续会话命名失败'))).toBe(true)
+    expect(host.prompts).toHaveLength(1)
+    expect(host.viewOf(session).phase).toBe('transferred')
   })
 
   test('projects the session start time for the status clock', async () => {

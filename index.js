@@ -184,6 +184,49 @@ function lastTurnEndedAtOf(state) {
   return Number.isFinite(value) && value > 0 ? value : 0
 }
 
+// Continuation titles append this chain marker to the source session title:
+// "原题 第2次交接". Parsing it back lets the next handoff continue the chain
+// instead of nesting another suffix.
+const HANDOFF_TITLE_PATTERN = /\s*第(\d+)次交接\s*$/
+// DSH's default session-title budget (`session-title.maxTitleBytes: 80`). The
+// suffix is reserved inside it so a long title cannot truncate the marker and
+// strand the chain depth on the next handoff.
+const HANDOFF_TITLE_MAX_BYTES = 80
+
+function truncateUtf8(input, maxBytes) {
+  if (Buffer.byteLength(input, 'utf8') <= maxBytes) return input
+  let used = 0
+  let output = ''
+  for (const character of input) {
+    const bytes = Buffer.byteLength(character, 'utf8')
+    if (used + bytes > maxBytes) break
+    output += character
+    used += bytes
+  }
+  return output
+}
+
+function handoffTitle(baseTitle, depth) {
+  const suffix = ` 第${depth}次交接`
+  const base = typeof baseTitle === 'string' && baseTitle.trim() !== '' ? baseTitle.trim() : '会话'
+  const budget = Math.max(1, HANDOFF_TITLE_MAX_BYTES - Buffer.byteLength(suffix, 'utf8'))
+  return `${truncateUtf8(base, budget)}${suffix}`
+}
+
+// Read the chain depth out of the current title; a title without the marker
+// starts a fresh chain at 第1次交接.
+function nextHandoffTitle(currentTitle, fallbackBase) {
+  const text = typeof currentTitle === 'string' ? currentTitle.trim() : ''
+  const match = HANDOFF_TITLE_PATTERN.exec(text)
+  if (match === null) return handoffTitle(text === '' ? fallbackBase : text, 1)
+  const depth = Number(match[1])
+  const base = text.slice(0, match.index).trim()
+  return handoffTitle(
+    base === '' ? fallbackBase : base,
+    Number.isSafeInteger(depth) && depth > 0 ? depth + 1 : 1,
+  )
+}
+
 function sendJson(response, status, body) {
   response.statusCode = status
   response.setHeader('content-type', 'application/json; charset=utf-8')
@@ -471,6 +514,18 @@ export function apply(ctx, config) {
     return session.header.agentPreset
   }
 
+  // The current durable title projection (string | null); empty when the title
+  // service has not produced one yet.
+  function sessionTitleOf(session) {
+    try {
+      const title = ctx.get('sessionProjections')?.stateOf(session, 'title')
+      return typeof title === 'string' ? title : ''
+    } catch (error) {
+      logger(`会话交接：读取会话标题失败：${describeError(error)}`)
+      return ''
+    }
+  }
+
   async function requestHandoff(session, reason) {
     const agent = ctx.get('agents')?.get(session.id)
     if (agent === undefined) {
@@ -536,6 +591,15 @@ export function apply(ctx, config) {
     // Record the continuation before prompting: a crash between the two must not
     // let the next start create a fresh session for the same handoff.
     remember(session.id, { newSessionId: created.sessionId })
+    // session.create accepts no title, so name the continuation right after
+    // creation: "原题 第N次交接" and let the next hop continue the chain.
+    const title = nextHandoffTitle(sessionTitleOf(session), `会话 ${shortId(session.id)}`)
+    try {
+      await controller.rename({ sessionId: created.sessionId, title })
+    } catch (error) {
+      // Naming is cosmetic; the handoff itself must continue.
+      logger(`会话交接：接续会话命名失败（${title}）：${describeError(error)}`)
+    }
     try {
       const abort = new AbortController()
       await controller.prompt({

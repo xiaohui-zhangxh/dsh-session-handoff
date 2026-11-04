@@ -31,7 +31,7 @@
 1. 在 `turn/end` 之后判定：轮次 ≥ 最大轮次（默认 50）。
 2. 向当前会话注入一条交接指令（`agent.followup`，等 agent 空闲后发送），要求模型用 `write` 写出交接文件，包含任务目标、当前进度、未完成事项、关键文件、决策与约束、待确认问题、环境信息。
 3. 交接那一轮结束后：
-   - 文件存在 → 创建新会话（沿用原会话所在的**工作区**与**当前选中的 agent preset**，新会话从该工作区的目录启动），并把「先读交接文件再继续」的提示发给新会话；原会话未归入任何工作区时沿用当前工作目录，接续会话也保持未分组；
+   - 文件存在 → 创建新会话（沿用原会话所在的**工作区**与**当前选中的 agent preset**，新会话从该工作区的目录启动），立即把它命名为「**原会话标题 第N次交接**」（N 沿交接链递增；`session.create` 本身不接受标题，是创建后调用 `rename`），再把「先读交接文件再继续」的提示发给新会话；原会话未归入任何工作区时沿用当前工作目录，接续会话也保持未分组；
    - 文件缺失 → 重试一次；仍缺失则用会话日志生成兜底交接文件，再转移。
 4. 每个会话最多交接一次：
    - 交接阶段同时写进内存与 `session-handoff.state.json`，插件/宿主重载后仍然有效；
@@ -69,7 +69,7 @@
 bun test
 ```
 
-单测用模拟的宿主上下文覆盖：只交接一次、重复 `turn/end` 不重复开会话、插件重载后不重复交接、重载后从交接文件/续接提示恢复状态、续接沿用选中 preset、交接中拒绝重复请求、启动时间/最后结束时间投影与探针字段、轮次工作时间累加（轮间空闲不计、重复 `turn/end` 不重复计、未结束的轮次丢弃）、接续会话继承工作区。状态栏的启动时间/工作时间格式化与实时累加由 `test/client-clock.test.mjs` 直接加载浏览器半边做纯函数校验。
+单测用模拟的宿主上下文覆盖：只交接一次、重复 `turn/end` 不重复开会话、插件重载后不重复交接、重载后从交接文件/续接提示恢复状态、续接沿用选中 preset、交接中拒绝重复请求、启动时间/最后结束时间投影与探针字段、轮次工作时间累加（轮间空闲不计、重复 `turn/end` 不重复计、未结束的轮次丢弃）、接续会话继承工作区、标题按「原标题 第N次交接」生成与连号（含无标题兜底、80 字节截断、重命名失败不阻断交接）。状态栏的启动时间/工作时间格式化与实时累加由 `test/client-clock.test.mjs` 直接加载浏览器半边做纯函数校验。
 
 ## 安装与更新
 
@@ -87,7 +87,7 @@ dsh plugin --profile desktop add "$(pwd)/dsh-session-handoff"
 
 ## English
 
-A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plugin. It keeps a compact status line below the composer with the session start time, the accumulated work time of the session's turns, and the turn counter; the time pill opens a “work time” panel (same skin as the composer token/stat panels: icon + title, rule, right-aligned rows) with the start time, last turn end time, and total work time. When a configurable turn limit is reached it asks the model to write a handoff file, then creates a fresh session with the same workspace and agent preset and sends it a resume prompt. The handoff is durable and idempotent: one session can never spawn more than one continuation, and reopening a handed-off session does not redirect away from it again.
+A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plugin. It keeps a compact status line below the composer with the session start time, the accumulated work time of the session's turns, and the turn counter; the time pill opens a “work time” panel (same skin as the composer token/stat panels: icon + title, rule, right-aligned rows) with the start time, last turn end time, and total work time. When a configurable turn limit is reached it asks the model to write a handoff file, then creates a fresh session with the same workspace and agent preset, names it “<source title> 第N次交接” (N advances along the chain), and sends it a resume prompt. The handoff is durable and idempotent: one session can never spawn more than one continuation, and reopening a handed-off session does not redirect away from it again.
 
 - Requires DSH 0.2.x on the Web/desktop profile (verified on 0.2.1-rc.5).
 - Install: `dsh plugin --profile desktop add <repo dir>`.
@@ -101,6 +101,7 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plug
 - 工作时间只累计已结束轮次的 `turn/start → turn/end`；宿主崩溃导致某轮没有 `turn/end` 时，该轮不计入（不会把之后到下一轮之间的空闲算进去）。
 - 「最后对话结束时间」只在 `turn/end` 到达时更新；进行中的一轮显示的是上一次结束时间。
 - 会话里用 `cd` 切换过的子目录不会带进接续会话：接续会话以工作区目录为工作目录（交接文件里记录了原工作目录，可在接续会话中切回）。
+- 接续会话的命名依赖标题后缀「第N次交接」：连号靠解析上一会话标题得到，手动改写或删除该后缀后，下一条接续会话会按新标题重新从第 1 次开始编号；标题受 DSH 的 80 字节上限约束，超长时截断原标题以保留后缀；重命名失败只记日志，不影响交接本身。
 - 交接状态文件在 DSH home 下，换 profile 或清空 `~/.dsh` 后会丢失；此时退回交接文件判定（仍不会重复开会话，只是 `已交接 →` 的新会话可能显示为空）。
 - 停止插件或删除本包即移除状态栏与后台判定；已生成的交接文件保留。
 
