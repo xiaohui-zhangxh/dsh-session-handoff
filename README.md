@@ -28,7 +28,7 @@
 
 ## 交接流程
 
-1. 在 `turn/end` 之后判定：轮次 ≥ 最大轮次（默认 50）。
+1. 在 `turn/end` 之后判定：轮次 ≥ 最大轮次（默认 30）。
 2. 向当前会话注入一条交接指令（`agent.followup`，等 agent 空闲后发送），要求模型用 `write` 写出交接文件，包含任务目标、当前进度、未完成事项、关键文件、决策与约束、待确认问题、环境信息。
 3. 交接那一轮结束后：
    - 文件存在 → 创建新会话（沿用原会话所在的**工作区**与**当前选中的 agent preset**，新会话从该工作区的目录启动），立即把它命名为「**原会话标题 第N次交接**」（N 沿交接链递增；`session.create` 本身不接受标题，是创建后调用 `rename`），再把「先读交接文件再继续」的提示发给新会话；原会话未归入任何工作区时沿用当前工作目录，接续会话也保持未分组；
@@ -49,7 +49,7 @@
 
 - 设置文件：`$DSH_PROFILE_DIR/session-handoff.settings.json`（没有 `DSH_PROFILE_DIR` 时用 `$DSH_HOME/session-handoff.settings.json`）。
 - 交接状态文件：同目录的 `session-handoff.state.json`，按会话记录 `phase` / `handoffFile` / `newSessionId`，只保留 7 天内、最多 500 条。
-- 默认值：`enabled: true`、`autoHandoff: true`、`maxRounds: 50`、`handoffDir: tmp/handoff`。
+- 默认值：`enabled: true`、`autoHandoff: true`、`maxRounds: 30`、`handoffDir: tmp/handoff`。
 - 宿主编排行：`cordis.patch.yml` 插入 `session-handoff` 行（包根 `index.js`）；浏览器半边由 `package.json` 的 `dsh.client` 声明，注册到 `conversation.composer.dock`。
 
 ## 本机接口
@@ -58,7 +58,7 @@
 
 - `GET /session-handoff/api` → `{ settings, file, stateFile, source }`
 - `GET /session-handoff/api?session=<sessionId>` → 该会话的 `{ session, startedAt, runMs, runStartedAt, lastTurnEndedAt, guard, turns }`：`startedAt` 是会话创建时间（Unix 毫秒），`runMs` 是已结束轮次的工作时间之和（毫秒），`runStartedAt` 是当前轮的开始时间（没有在跑的轮次时 0），`lastTurnEndedAt` 是最近一次 `turn/end` 的时间，`guard` 含轮次、工作时间与交接阶段（只对进程内活跃会话有效）
-- `POST` `{ "action": "settings", "maxRounds": 50, "enabled": true, "autoHandoff": true }`
+- `POST` `{ "action": "settings", "maxRounds": 30, "enabled": true, "autoHandoff": true }`
 - `POST` `{ "action": "handoff", "sessionId": "<sessionId>" }`（该会话已在交接流程中时返回 409）
 
 跨站请求（`Origin` 不匹配 或 `Sec-Fetch-Site` 非 `same-origin`）一律 403。

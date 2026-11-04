@@ -11,7 +11,7 @@ const DERIVED_NOTES = ['已生成交接文件', '此前已生成交接文件']
 const DEFAULT_SETTINGS = {
   enabled: true,
   autoHandoff: true,
-  maxRounds: 50,
+  maxRounds: 30,
   handoffDir: 'tmp/handoff',
 }
 
