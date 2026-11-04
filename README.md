@@ -14,12 +14,14 @@
 ![轮次接近上限](assets/turn-limit-warning.webp)
 
 <p>
-  <img src="assets/turn-settings.webp" width="47%" alt="轮次设置与自动交接" />
+  <img src="assets/turn-settings.webp" width="31%" alt="轮次设置与自动交接" />
   &nbsp;&nbsp;
-  <img src="assets/worktime-panel.webp" width="47%" alt="工时记录面板" />
+  <img src="assets/worktime-panel.webp" width="31%" alt="工时记录面板" />
+  &nbsp;&nbsp;
+  <img src="assets/workspace-group.webp" width="31%" alt="交接后的新会话落在原工作区" />
 </p>
 
-*左：轮次设置与自动交接 · 右：工时记录（启动 / 最后对话结束 / 总工作时间）*
+*左：轮次设置与自动交接 · 中：工时记录（启动 / 最后对话结束 / 总工作时间） · 右：交接后的新会话落在原工作区，标题沿用「原标题 第N次交接」*
 
 ## 安装
 
