@@ -28,6 +28,8 @@ class TestHost {
     this.creates = []
     this.prompts = []
     this.logs = []
+    this.workspaces = []
+    this.createFailure = undefined
     this.handler = undefined
     this.listeners = {}
     this.disposers = []
@@ -56,6 +58,11 @@ class TestHost {
       sessionProjections: this.registry,
       sessionController: {
         create: async (request) => {
+          if (self.createFailure !== undefined && request.workspaceId !== undefined) {
+            const error = new Error(self.createFailure.message)
+            error.code = self.createFailure.code
+            throw error
+          }
           const sessionId = `session-cont-${self.creates.length + 1}-0000000000`
           self.creates.push({ ...request, createdId: sessionId })
           return { sessionId }
@@ -66,6 +73,10 @@ class TestHost {
         },
       },
       workingDirectory: { get: (session) => session.header.cwd },
+      workspaceRegistry: {
+        list: () => self.workspaces,
+        get: (id) => self.workspaces.find((workspace) => workspace.id === id),
+      },
       agents: { get: (id) => self.agents.get(id) },
       webServer: {
         register: ({ handler }) => {
@@ -129,6 +140,14 @@ class TestHost {
     }
     this.agents.set(sessionId, agent)
     return agent
+  }
+
+  // One workspace record shaped like the Host's public Workspace interface:
+  // membership is `sessionIds`, and the registry is the only lookup surface.
+  makeWorkspace(id, sessionIds = []) {
+    const workspace = { id, path: this.cwd, sessionIds }
+    this.workspaces.push(workspace)
+    return workspace
   }
 
   emit(session, event) {
@@ -332,7 +351,7 @@ describe('session handoff', () => {
   })
 
   test('keeps the selected agent preset for the continuation', async () => {
-    const { host } = setup({ enabled: true, autoHandoff: true, maxRounds: 10 })
+    const { cwd, host } = setup({ enabled: true, autoHandoff: true, maxRounds: 10 })
     const session = host.makeSession('session-aaaabbbb-cccc-dddd-eeee-77778888eeee')
     host.event(session, 'agent-preset/selected', { agentPreset: 'cordis' })
     const agent = host.makeAgent(session.id)
@@ -344,6 +363,51 @@ describe('session handoff', () => {
     await flush()
     expect(host.creates).toHaveLength(1)
     expect(host.creates[0].agentPreset).toBe('cordis')
+    // An ungrouped session keeps the old behaviour: the continuation starts in
+    // the same directory and stays ungrouped.
+    expect(host.creates[0].workspaceId).toBeUndefined()
+    expect(host.creates[0].cwd).toBe(cwd)
+  })
+
+  test('creates the continuation inside the current session workspace', async () => {
+    const { host } = setup({ enabled: true, autoHandoff: true, maxRounds: 10 })
+    const session = host.makeSession('session-aaaabbbb-cccc-dddd-eeee-123412341234')
+    const workspace = host.makeWorkspace('workspace-1', [session.id])
+    const agent = host.makeAgent(session.id)
+    await host.turns(session, 1, 10)
+    const file = instructionFile(agent.followups[0])
+    writeHandoff(file)
+    host.event(session, 'turn/start', { turn: 11 })
+    host.event(session, 'turn/end', { turn: 11 })
+    await flush()
+
+    expect(host.creates).toHaveLength(1)
+    // workspaceId and cwd are mutually exclusive for session.create; the
+    // workspace also decides the new session's directory host-side.
+    expect(host.creates[0].workspaceId).toBe(workspace.id)
+    expect(host.creates[0].cwd).toBeUndefined()
+    expect(host.prompts[0].sessionId).toBe(host.creates[0].createdId)
+  })
+
+  test('falls back to the working directory when the workspace disappears', async () => {
+    const { cwd, host } = setup({ enabled: true, autoHandoff: true, maxRounds: 10 })
+    const session = host.makeSession('session-aaaabbbb-cccc-dddd-eeee-432143214321')
+    host.makeWorkspace('workspace-gone', [session.id])
+    // The Host refuses the workspace before creating anything, so the retry is
+    // the only Session that exists afterwards.
+    host.createFailure = { code: 'workspace/not-found', message: 'workspace "workspace-gone" not found' }
+    const agent = host.makeAgent(session.id)
+    await host.turns(session, 1, 10)
+    const file = instructionFile(agent.followups[0])
+    writeHandoff(file)
+    host.event(session, 'turn/start', { turn: 11 })
+    host.event(session, 'turn/end', { turn: 11 })
+    await flush()
+
+    expect(host.creates).toHaveLength(1)
+    expect(host.creates[0].workspaceId).toBeUndefined()
+    expect(host.creates[0].cwd).toBe(cwd)
+    expect(host.prompts).toHaveLength(1)
   })
 
   test('projects the session start time for the status clock', async () => {

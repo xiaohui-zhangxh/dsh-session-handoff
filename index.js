@@ -271,6 +271,23 @@ export function apply(ctx, config) {
     return session.header.cwd ?? process.cwd()
   }
 
+  // The Web sidebar groups Sessions by Workspace membership, not by cwd: a
+  // continuation created with `cwd` alone lands in the ungrouped bucket even
+  // though it runs in the same directory. Only a Session that is actually
+  // accounted by a Workspace inherits it; an ungrouped Session stays ungrouped.
+  function workspaceOf(session) {
+    try {
+      const registry = ctx.get('workspaceRegistry')
+      if (registry === undefined || typeof registry.list !== 'function') return undefined
+      for (const workspace of registry.list()) {
+        if (Array.isArray(workspace.sessionIds) && workspace.sessionIds.includes(session.id)) return workspace
+      }
+    } catch (error) {
+      logger(`会话交接：解析会话工作区失败：${describeError(error)}`)
+    }
+    return undefined
+  }
+
   function handoffFileFor(session) {
     const dir = path.resolve(sessionCwd(session), settings.current.handoffDir)
     return path.join(dir, `${formatStamp(Date.now())}-${shortId(session.id)}.md`)
@@ -498,10 +515,24 @@ export function apply(ctx, config) {
       remember(session.id, { phase: 'failed', note: 'sessionController 不可用' })
       return
     }
-    const created = await controller.create({
-      cwd: sessionCwd(session),
+    // `workspaceId` and `cwd` are mutually exclusive for session.create; passing
+    // the Workspace also attaches the continuation to the same sidebar group.
+    const workspace = workspaceOf(session)
+    const createRequest = (target) => ({
+      ...(target === undefined ? { cwd: sessionCwd(session) } : { workspaceId: target.id }),
       agentPreset: selectedPreset(session),
     })
+    let created
+    try {
+      created = await controller.create(createRequest(workspace))
+    } catch (error) {
+      // A Workspace deleted between resolution and creation fails before any
+      // Session exists, so retrying against the directory cannot duplicate one.
+      if (workspace === undefined
+        || error === null || typeof error !== 'object' || error.code !== 'workspace/not-found') throw error
+      logger(`会话交接：工作区 ${workspace.id} 已不存在，按当前工作目录创建接续会话`)
+      created = await controller.create(createRequest(undefined))
+    }
     // Record the continuation before prompting: a crash between the two must not
     // let the next start create a fresh session for the same handoff.
     remember(session.id, { newSessionId: created.sessionId })
