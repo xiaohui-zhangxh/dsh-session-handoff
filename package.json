@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-session-handoff",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "type": "module",
   "description": "DSH plugin: shows the session start time, accumulated work time, and turn count, with a session-time panel, and hands the task to a fresh session when a configurable turn limit is reached",

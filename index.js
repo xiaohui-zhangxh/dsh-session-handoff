@@ -78,6 +78,10 @@ function normalizeStoredMeta(meta) {
     handoffFile: typeof meta.handoffFile === 'string' ? meta.handoffFile : '',
     newSessionId: typeof meta.newSessionId === 'string' ? meta.newSessionId : '',
     reason: typeof meta.reason === 'string' ? meta.reason : '',
+    // How the handoff started decides what the continuation is told to do:
+    // an automatic handoff continues, a manual one reports and waits.
+    trigger: meta.trigger === 'manual' ? 'manual' : 'auto',
+    handoffTurn: Number.isFinite(Number(meta.handoffTurn)) ? Number(meta.handoffTurn) : 0,
     note: typeof meta.note === 'string' ? meta.note : '',
     derived: meta.derived === true || DERIVED_NOTES.includes(meta.note),
     updatedAt: Number.isFinite(Number(meta.updatedAt)) ? Number(meta.updatedAt) : 0,
@@ -285,6 +289,8 @@ export function apply(ctx, config) {
       handoffFile: meta.handoffFile ?? '',
       newSessionId: meta.newSessionId ?? '',
       reason: meta.reason ?? '',
+      trigger: meta.trigger === 'manual' ? 'manual' : 'auto',
+      handoffTurn: meta.handoffTurn ?? 0,
       note: meta.note ?? '',
       derived: meta.derived === true,
       updatedAt: Date.now(),
@@ -300,6 +306,8 @@ export function apply(ctx, config) {
       || previous.handoffFile !== next.handoffFile
       || previous.newSessionId !== next.newSessionId
       || previous.note !== next.note
+      || previous.trigger !== next.trigger
+      || previous.handoffTurn !== next.handoffTurn
     if (changed) persist(sessionId, next)
     return next
   }
@@ -417,20 +425,15 @@ export function apply(ctx, config) {
     })
   }
 
-  function handoffInstruction(file, reason, retry) {
+  function handoffInstruction(file, reason, retry, trigger) {
     const lines = [
-      `${MARK} 本会话已达到上限（${reason}），必须立刻把任务交接出去，再结束这一轮。`,
+      trigger === 'manual'
+        ? `${MARK} 操作者已请求交接（${reason}），请立刻把任务交接出去，再结束这一轮。`
+        : `${MARK} 本会话已达到轮次上限（${reason}），必须立刻把任务交接出去，再结束这一轮。`,
       '',
       '请严格按以下要求执行：',
       `1. 使用 write 工具把交接文件写入这个绝对路径：${file}`,
-      '2. 交接文件用 Markdown，必须包含这些小节，且信息要具体到接手者不用回看本会话即可继续：',
-      '   - 任务目标：用户原始需求与验收标准',
-      '   - 当前进度：已完成的事项（含关键结论）',
-      '   - 未完成事项：按优先级列出的下一步',
-      '   - 关键文件：绝对路径 + 每个文件的作用 + 已做的改动',
-      '   - 决策与约束：已定方案、被否决的方案、用户明确的偏好与禁止项',
-      '   - 待确认问题：需要向用户澄清的点',
-      '   - 环境信息：工作目录、运行命令、相关分支/任务号',
+      '2. 文档里写清楚：任务目标与验收标准、当前进度（含关键结论）、下一步动作（按优先级、接手者能直接执行）、关键文件与已做的改动、已定决策与约束、待确认问题、环境信息。',
       '3. 只写这一份文件，不要继续原任务、不要开始新的探索、不要向用户提问。',
       '',
       `写完后只回复一行：交接完成: ${file}`,
@@ -439,14 +442,31 @@ export function apply(ctx, config) {
     return lines.join('\n')
   }
 
-  function resumePrompt(session, file, reason, fallback) {
+  // The continuation's first message depends on who started the handoff. An
+  // automatic handoff keeps the task moving; a manual one asks the model to
+  // report the next step first and wait for the operator's go-ahead.
+  function resumePrompt(session, file, reason, fallback, trigger, handoffTurn) {
+    const manual = trigger === 'manual'
+    const turnLabel = Number(handoffTurn) > 0 ? `第 ${handoffTurn} 轮` : '本轮'
     const lines = [
-      `${MARK} 这是上一会话 ${session.id} 的交接延续。上一会话因 ${reason} 达到上限，已停止工作。`,
+      manual
+        ? `${MARK} 这是上一会话 ${session.id} 的交接延续。上一会话由操作者在${turnLabel}手动交接，已停止工作。`
+        : `${MARK} 这是上一会话 ${session.id} 的交接延续。上一会话因 ${reason} 达到上限，已停止工作。`,
       `交接文件：${file}`,
       '',
-      '请先读这个交接文件，确认任务目标、进度与下一步，然后直接继续执行任务。',
-      '不要重复已完成的步骤，不要重新向用户索要已经提供过的信息。',
     ]
+    if (manual) {
+      lines.push(
+        '请先读这个交接文件，确认任务目标、进度与下一步。',
+        '这次是操作者手动触发的交接：读完先不要继续执行任务。用几句话向操作者说明下一步要做什么、有哪些需要拍板或注意的点，然后等操作者确认再开始。',
+        '不要重复已完成的步骤，不要重新向用户索要已经提供过的信息。',
+      )
+    } else {
+      lines.push(
+        '请先读这个交接文件，确认任务目标、进度与下一步，然后直接继续执行任务。',
+        '不要重复已完成的步骤，不要重新向用户索要已经提供过的信息。',
+      )
+    }
     if (fallback) lines.push('', '注意：交接文件由系统在模型未写入时自动生成，内容可能不完整。开始前先核对仓库与工作区现状，必要时再向用户确认。')
     return lines.join('\n')
   }
@@ -526,7 +546,7 @@ export function apply(ctx, config) {
     }
   }
 
-  async function requestHandoff(session, reason) {
+  async function requestHandoff(session, reason, trigger = 'auto') {
     const agent = ctx.get('agents')?.get(session.id)
     if (agent === undefined) {
       logger(`会话交接：会话 ${session.id} 没有 live agent，跳过交接`)
@@ -538,15 +558,18 @@ export function apply(ctx, config) {
       return false
     }
     const file = handoffFileFor(session)
+    const turns = turnsOf(session)
     remember(session.id, {
       phase: 'awaiting-handoff',
       handoffFile: file,
-      handoffAfterTurn: turnsOf(session),
+      handoffAfterTurn: turns,
       attempts: 0,
       reason,
+      trigger: trigger === 'manual' ? 'manual' : 'auto',
+      handoffTurn: turns,
     })
     try {
-      await sendWhenIdle(agent, userTextMessage(handoffInstruction(file, reason, false)))
+      await sendWhenIdle(agent, userTextMessage(handoffInstruction(file, reason, false, trigger)))
     } catch (error) {
       logger(`会话交接：注入交接指令失败：${describeError(error)}`)
       remember(session.id, { phase: 'failed', note: describeError(error) })
@@ -559,11 +582,11 @@ export function apply(ctx, config) {
     const agent = ctx.get('agents')?.get(session.id)
     if (agent === undefined) return false
     remember(session.id, { attempts: (meta.attempts ?? 0) + 1 })
-    await sendWhenIdle(agent, userTextMessage(handoffInstruction(meta.handoffFile, meta.reason ?? '达到上限', true)))
+    await sendWhenIdle(agent, userTextMessage(handoffInstruction(meta.handoffFile, meta.reason ?? '达到上限', true, meta.trigger)))
     return true
   }
 
-  async function createSessionAndContinue(session, file, reason, fallback) {
+  async function createSessionAndContinue(session, meta, fallback) {
     const controller = ctx.get('sessionController')
     if (controller === undefined) {
       logger('会话交接：缺少 sessionController，无法创建接续会话')
@@ -606,7 +629,7 @@ export function apply(ctx, config) {
         requestId: globalThis.crypto.randomUUID(),
         sessionId: created.sessionId,
         mode: 'queue',
-        content: [{ type: 'text', text: resumePrompt(session, file, reason, fallback) }],
+        content: [{ type: 'text', text: resumePrompt(session, meta.handoffFile, meta.reason ?? '达到上限', fallback, meta.trigger, meta.handoffTurn) }],
       }, abort.signal)
     } catch (error) {
       logger(`会话交接：接续会话 ${created.sessionId} 已创建，但续接提示发送失败：${describeError(error)}`)
@@ -614,7 +637,7 @@ export function apply(ctx, config) {
       return
     }
     remember(session.id, { phase: 'transferred', newSessionId: created.sessionId })
-    logger(`会话交接：会话 ${session.id} 已交接给 ${created.sessionId}（${file}）`)
+    logger(`会话交接：会话 ${session.id} 已交接给 ${created.sessionId}（${meta.handoffFile}）`)
   }
 
   function scheduleTransfer(session, meta) {
@@ -629,7 +652,7 @@ export function apply(ctx, config) {
         logger(`会话交接：写兜底交接文件失败：${describeError(error)}`)
       }
     }
-    const task = createSessionAndContinue(session, meta.handoffFile, meta.reason ?? '达到上限', fallback)
+    const task = createSessionAndContinue(session, meta, fallback)
       .catch((error) => {
         logger(`会话交接：创建接续会话失败：${describeError(error)}`)
         remember(session.id, { phase: 'failed', note: describeError(error) })
@@ -675,7 +698,7 @@ export function apply(ctx, config) {
       remember(session.id, { phase: 'reached', reason: `轮次 ${turns}/${settings.current.maxRounds}` })
       return
     }
-    void requestHandoff(session, `轮次 ${turns}/${settings.current.maxRounds}`).catch((error) => {
+    void requestHandoff(session, `轮次 ${turns}/${settings.current.maxRounds}`, 'auto').catch((error) => {
       logger(`会话交接：请求交接失败：${describeError(error)}`)
       remember(session.id, { phase: 'failed', note: describeError(error) })
     })
@@ -859,8 +882,9 @@ export function apply(ctx, config) {
           return
         }
         const turns = turnsOf(session)
-        const reason = reachedLimit(turns) ? `轮次 ${turns}/${settings.current.maxRounds}` : `手动交接（轮次 ${turns}）`
-        const started = await requestHandoff(session, reason)
+        // A click is always a manual handoff, even at the limit: the
+        // continuation must report back instead of racing ahead.
+        const started = await requestHandoff(session, `轮次 ${turns}`, 'manual')
         sendJson(response, started ? 200 : 409, started ? { started: true } : { error: '会话已在交接流程中或没有 live agent' })
         return
       }

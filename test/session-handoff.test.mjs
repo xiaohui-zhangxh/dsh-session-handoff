@@ -309,6 +309,15 @@ describe('session handoff', () => {
     expect(host.prompts[0].sessionId).toBe(host.creates[0].createdId)
     expect(host.viewOf(session).phase).toBe('transferred')
 
+    // An automatic handoff keeps the task moving: the instruction names the
+    // limit and the continuation is told to read the file and carry on.
+    const instruction = agent.followups[0].content.map((block) => block.text).join('')
+    expect(instruction).toContain('已达到轮次上限')
+    expect(instruction).toContain('下一步动作')
+    const resume = host.prompts[0].content.map((block) => block.text).join('')
+    expect(resume).toContain('直接继续执行任务')
+    expect(resume).not.toContain('等操作者确认')
+
     // Coming back to the old session later produces further turns; none of them
     // may hand off again.
     await host.turns(session, 12, 13)
@@ -317,6 +326,45 @@ describe('session handoff', () => {
     const stored = readStateFile(home).sessions[session.id]
     expect(stored.phase).toBe('transferred')
     expect(stored.newSessionId).toBe(host.creates[0].createdId)
+  })
+
+  test('manual handoff tells the continuation to report the next step and wait', async () => {
+    const { home, host } = setup({ enabled: true, autoHandoff: true, maxRounds: 10 })
+    const session = host.makeSession('session-aaaabbbb-cccc-dddd-eeee-aaaa1111bbbb')
+    const agent = host.makeAgent(session.id)
+
+    // The button works well before the limit, so the instruction must not claim
+    // the session hit its cap.
+    await host.turns(session, 1, 3)
+    const requested = await host.post('handoff', { sessionId: session.id })
+    expect(requested.status).toBe(200)
+    expect(agent.followups).toHaveLength(1)
+
+    const instruction = agent.followups[0].content.map((block) => block.text).join('')
+    expect(instruction).toContain('操作者已请求交接')
+    expect(instruction).not.toContain('已达到轮次上限')
+    // The handoff document stays the only deliverable and must name the next action.
+    expect(instruction).toContain('下一步动作')
+    expect(instruction).toContain('只回复一行：交接完成')
+
+    const file = instructionFile(agent.followups[0])
+    writeHandoff(file)
+    host.event(session, 'turn/start', { turn: 4 })
+    host.event(session, 'turn/end', { turn: 4 })
+    await flush()
+
+    expect(host.creates).toHaveLength(1)
+    const resume = host.prompts[0].content.map((block) => block.text).join('')
+    expect(resume).toContain('由操作者在第 3 轮手动交接')
+    expect(resume).toContain('先不要继续执行任务')
+    expect(resume).toContain('等操作者确认')
+    expect(resume).not.toContain('直接继续执行任务')
+
+    // The trigger is durable: a plugin reload must not silently turn this into
+    // an automatic handoff that races ahead.
+    const stored = readStateFile(home).sessions[session.id]
+    expect(stored.trigger).toBe('manual')
+    expect(stored.handoffTurn).toBe(3)
   })
 
   test('a reloaded plugin never repeats the handoff (durable state)', async () => {

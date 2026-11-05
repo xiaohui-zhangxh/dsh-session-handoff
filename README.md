@@ -1,7 +1,7 @@
 # 会话交接（Session Handoff）· DSH 插件
 
-> 在 DSH 输入框下方常驻状态栏，显示会话启动时间、工作时间与对话轮次；到上限自动交接，让任务在同一工作区的新会话里继续。
-> A DeepSeek Harness plugin that shows the session start time, accumulated work time, and turn count, and hands the task off to a fresh session in the same workspace at a configurable limit.
+> 在 DSH 输入框下方常驻状态栏，显示会话启动时间、工作时间与对话轮次；到上限自动交接，让任务在同一工作区的新会话里继续。手动点「立即交接」时，新会话读完交接文件会先汇报下一步，等你确认再开始。
+> A DeepSeek Harness plugin that shows the session start time, accumulated work time, and turn count, and hands the task off to a fresh session in the same workspace at a configurable limit; a manual handoff reports the next step and waits for your confirmation before continuing.
 
 [效果展示](#效果展示) · [安装](#安装) · [更新](#更新) · [技术文档](docs/TECHNICAL.md) · [License](#license)
 
